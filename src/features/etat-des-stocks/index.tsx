@@ -184,13 +184,25 @@ export function EtatDesStocks() {
   )
   const canRecalculateStock = role === 'admin' || role === 'manager'
 
-  // Filters
+  // Filters (initialized from URL query parameters when navigated from Dashboard)
   const [searchQuery, setSearchQuery] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState<string>('all')
-  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [categoryFilter, setCategoryFilter] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'all'
+    return new URLSearchParams(window.location.search).get('category') || 'all'
+  })
+  const [statusFilter, setStatusFilter] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'all'
+    return new URLSearchParams(window.location.search).get('status') || 'all'
+  })
   const [locationFilter, setLocationFilter] = useState<string>('all')
-  const [onlyMissingPrice, setOnlyMissingPrice] = useState(false)
-  const [onlyMissingMin, setOnlyMissingMin] = useState(false)
+  const [onlyMissingPrice, setOnlyMissingPrice] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return new URLSearchParams(window.location.search).get('priceMissing') === 'true'
+  })
+  const [onlyMissingMin, setOnlyMissingMin] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return new URLSearchParams(window.location.search).get('missingMin') === 'true'
+  })
   const [onlyNegativeStock, setOnlyNegativeStock] = useState(false)
 
   // Sort & Pagination

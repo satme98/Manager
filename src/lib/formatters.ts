@@ -16,6 +16,9 @@ export function formatMAD(value: number | null | undefined): string {
   return `${formatted} DH`
 }
 
+export const formatCurrencyMAD = formatMAD
+
+
 /**
  * Formats a quantity in French locale without trailing unnecessary zeros.
  */

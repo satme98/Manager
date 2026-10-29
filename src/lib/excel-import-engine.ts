@@ -5,6 +5,7 @@ import type {
   VatConvention,
 } from '@/data/types'
 import {
+  computeAllProductsStock,
   computeProductStock,
   computePurchaseLineAmount,
   normalizeProductRef,
@@ -2198,3 +2199,510 @@ export async function exportCollectionFile(
     bookType: format === 'csv' ? 'csv' : 'xlsx',
   })
 }
+
+/**
+ * Exports all data into a single multi-sheet .xlsx file mirroring the original
+ * MONARQ_ECONOMAT workbook structure:
+ * - Base Produits
+ * - Entrées Stock
+ * - Sorties Stock
+ * - Inventaire
+ * - fournisseur
+ * - Parametres
+ */
+export async function exportFullWorkbookMirror(
+  repo: DataRepository,
+  options?: { hidePrices?: boolean }
+): Promise<void> {
+  const hidePrices = Boolean(options?.hidePrices)
+  const [products, suppliers, pur, ext, inv, settings] = await Promise.all([
+    repo.listProducts(),
+    repo.listSuppliers(),
+    repo.listPurchases(),
+    repo.listExits(),
+    repo.listInventories(),
+    repo.listSettings(),
+  ])
+
+  const prdMap = new Map(products.map((p) => [p.id, p]))
+  const supMap = new Map(suppliers.map((s) => [s.id, s]))
+  const purMap = new Map(pur.headers.map((h) => [h.id, h]))
+  const extMap = new Map(ext.headers.map((h) => [h.id, h]))
+  const sessMap = new Map(inv.sessions.map((s) => [s.id, s]))
+
+  const wb = XLSX.utils.book_new()
+
+  // 1. Base Produits
+  const baseProduitsRows = products.map((p) => ({
+    Référence: p.ref,
+    Produit: p.name,
+    Catégorie: p.category,
+    Unité: p.unit,
+    'Stock initial': p.initial_stock,
+    'Stock minimum': p.min_stock ?? '',
+    Emplacement: p.location,
+  }))
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(baseProduitsRows),
+    'Base Produits'
+  )
+
+  // 2. Entrées Stock
+  const entreesRows = pur.lines.map((l) => {
+    const h = purMap.get(l.purchase)
+    const p = prdMap.get(l.product)
+    const s = h ? supMap.get(h.supplier) : undefined
+    const row: Record<string, unknown> = {
+      Date: h?.date ?? '',
+      Référence: p?.ref ?? l.product,
+      Produit: p?.name ?? '',
+      'Quantité entrée': l.qty,
+    }
+    if (!hidePrices) {
+      row['Prix U (MAD)'] = l.unit_price
+      row['Montant achat'] = l.amount
+    }
+    row['Paiement facturé'] = h?.payment_status === 'paid' ? 'OUI' : 'NON'
+    row['Fournisseur'] = s?.name ?? h?.supplier ?? ''
+    row['Date paiement'] = h?.payment_date ?? ''
+    row['N° Facture'] = h?.invoice_no ?? ''
+    row['Notes'] = h?.notes ?? ''
+    return row
+  })
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(entreesRows),
+    'Entrées Stock'
+  )
+
+  // 3. Sorties Stock
+  const sortiesRows = ext.lines.map((l) => {
+    const h = extMap.get(l.exit)
+    const p = prdMap.get(l.product)
+    return {
+      Date: h?.date ?? '',
+      Référence: p?.ref ?? l.product,
+      Produit: p?.name ?? '',
+      'Quantité sortie': l.qty_consumed,
+      Pertes: l.qty_wasted,
+      Destination: h?.destination || '',
+      Motif: l.loss_reason || h?.notes || '',
+    }
+  })
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(sortiesRows),
+    'Sorties Stock'
+  )
+
+  // 4. Inventaire
+  const inventaireRows = inv.lines.map((l) => {
+    const s = sessMap.get(l.session)
+    const p = prdMap.get(l.product)
+    return {
+      Référence: p?.ref ?? l.product,
+      Produit: p?.name ?? '',
+      Unité: p?.unit ?? '',
+      'Stock théorique': l.theoretical,
+      'Stock réel': l.counted,
+      Écart: l.diff,
+      'Date inventaire': s?.date ?? '',
+      Statut: s?.status ?? '',
+    }
+  })
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(inventaireRows),
+    'Inventaire'
+  )
+
+  // 5. fournisseur
+  const fournisseurRows = suppliers.map((s) => ({
+    Fournisseur: s.name,
+    Contact: s.contact,
+    Téléphone: s.phone,
+    Email: s.email,
+    'Conditions paiement': s.payment_terms,
+    Notes: s.notes,
+  }))
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(fournisseurRows),
+    'fournisseur'
+  )
+
+  // 6. Parametres
+  const parametresRows = settings.map((s) => ({
+    Clé: s.key,
+    Valeur:
+      typeof s.value === 'object' ? JSON.stringify(s.value) : String(s.value),
+  }))
+  XLSX.utils.book_append_sheet(
+    wb,
+    XLSX.utils.json_to_sheet(parametresRows),
+    'Parametres'
+  )
+
+  const dateStamp = new Date().toISOString().slice(0, 10)
+  XLSX.writeFile(wb, `MONARQ_ECONOMAT_COMPLET_${dateStamp}.xlsx`, {
+    bookType: 'xlsx',
+  })
+}
+
+export type DataQualityCategory =
+  | 'sans_categorie'
+  | 'categorie_incoherente'
+  | 'sans_stock_min'
+  | 'prix_manquant'
+  | 'doublon_potentiel'
+  | 'fournisseur_incomplet'
+  | 'a_verifier'
+
+export interface DataQualityItem {
+  id: string
+  category: DataQualityCategory
+  categoryLabel: string
+  collection: string
+  reference: string
+  label: string
+  detail: string
+  fixRoute: string
+  fixActionLabel: string
+}
+
+export interface DatabaseQualityReport {
+  generatedAt: string
+  counts: {
+    sans_categorie: number
+    categorie_incoherente: number
+    sans_stock_min: number
+    prix_manquant: number
+    doublon_potentiel: number
+    fournisseur_incomplet: number
+    a_verifier: number
+    total: number
+  }
+  items: DataQualityItem[]
+}
+
+export async function computeDatabaseQualityReport(
+  repo: DataRepository
+): Promise<DatabaseQualityReport> {
+  const [products, suppliers, pur, ext, inv] = await Promise.all([
+    repo.listProducts(),
+    repo.listSuppliers(),
+    repo.listPurchases(),
+    repo.listExits(),
+    repo.listInventories(),
+  ])
+
+  const stockMap = computeAllProductsStock({
+    products,
+    purchases: pur.headers,
+    purchaseLines: pur.lines,
+    exits: ext.headers,
+    exitLines: ext.lines,
+    inventorySessions: inv.sessions,
+    inventoryLines: inv.lines,
+  })
+
+  const items: DataQualityItem[] = []
+  const activeProducts = products.filter((p) => !p.archived)
+
+  // 1. Products without category
+  for (const p of activeProducts) {
+    const cat = (p.category ?? '').trim()
+    const lowerCat = cat.toLowerCase()
+    if (!cat || lowerCat === 'sans catégorie' || lowerCat === 'non classé') {
+      items.push({
+        id: `qc-cat-${p.id}`,
+        category: 'sans_categorie',
+        categoryLabel: 'Produit sans catégorie',
+        collection: 'Produits',
+        reference: p.ref,
+        label: p.name,
+        detail: 'Catégorie vide ou « Sans catégorie »',
+        fixRoute: '/produits',
+        fixActionLabel: 'Affecter une catégorie',
+      })
+    }
+  }
+
+  // 2. Inconsistent categories (case / accent variants)
+  const byNormCat = new Map<string, Set<string>>()
+  for (const p of activeProducts) {
+    const raw = (p.category ?? '').trim()
+    if (!raw) continue
+    const norm = raw
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+    const set = byNormCat.get(norm) ?? new Set<string>()
+    set.add(raw)
+    byNormCat.set(norm, set)
+  }
+  for (const [norm, variants] of byNormCat.entries()) {
+    if (variants.size > 1) {
+      const list = Array.from(variants)
+      items.push({
+        id: `qc-incat-${norm}`,
+        category: 'categorie_incoherente',
+        categoryLabel: 'Catégories incohérentes',
+        collection: 'Produits',
+        reference: norm.toUpperCase(),
+        label: list.join(' / '),
+        detail: `${list.length} variantes d’écriture pour la même famille (${list.join(', ')})`,
+        fixRoute: '/produits',
+        fixActionLabel: 'Fusionner les catégories',
+      })
+    }
+  }
+
+  // 3. Products without minimum stock ("À définir")
+  for (const p of activeProducts) {
+    if (p.min_stock === null || p.min_stock === undefined || p.min_stock <= 0) {
+      items.push({
+        id: `qc-min-${p.id}`,
+        category: 'sans_stock_min',
+        categoryLabel: 'Seuil minimum « À définir »',
+        collection: 'Produits',
+        reference: p.ref,
+        label: p.name,
+        detail: `Unité : ${p.unit} — Aucun seuil minimum configuré`,
+        fixRoute: '/reapprovisionnement',
+        fixActionLabel: 'Définir le seuil min.',
+      })
+    }
+  }
+
+  // 4. Products with missing price ("Prix manquant") or purchase lines with 0 price
+  for (const p of activeProducts) {
+    const st = stockMap.get(p.id)
+    if (st?.priceMissing) {
+      items.push({
+        id: `qc-prc-prod-${p.id}`,
+        category: 'prix_manquant',
+        categoryLabel: 'Prix moyen manquant',
+        collection: 'Produits',
+        reference: p.ref,
+        label: p.name,
+        detail: `Stock actuel : ${st.stock} ${p.unit} — Aucun achat valorisé (> 0 DH)`,
+        fixRoute: '/entrees-de-stock',
+        fixActionLabel: 'Saisir un prix d’achat',
+      })
+    }
+  }
+
+  const purHeaderMap = new Map(pur.headers.map((h) => [h.id, h]))
+  const prdMap = new Map(products.map((p) => [p.id, p]))
+  const supMap = new Map(suppliers.map((s) => [s.id, s]))
+
+  for (const line of pur.lines) {
+    const h = purHeaderMap.get(line.purchase)
+    if (!h || h.reversed_of || h.correction_status === 'reversed') continue
+    if (!line.unit_price || line.unit_price <= 0) {
+      const p = prdMap.get(line.product)
+      items.push({
+        id: `qc-prc-line-${line.id}`,
+        category: 'prix_manquant',
+        categoryLabel: 'Achat sans prix unitaire',
+        collection: 'Entrées Stock',
+        reference: h.invoice_no || h.date.slice(0, 10),
+        label: p ? `${p.ref} — ${p.name}` : line.product,
+        detail: `Entrée du ${h.date.slice(0, 10)} (Qté : ${line.qty}) à 0,00 DH`,
+        fixRoute: '/entrees-de-stock',
+        fixActionLabel: 'Corriger le bon d’entrée',
+      })
+    }
+  }
+
+  // 5. Duplicate-looking lines (same date, product, qty in active purchases or exits)
+  const purSigCount = new Map<string, { count: number; line: (typeof pur.lines)[0]; header: (typeof pur.headers)[0] }>()
+  for (const line of pur.lines) {
+    const h = purHeaderMap.get(line.purchase)
+    if (!h || h.reversed_of || h.correction_status === 'reversed') continue
+    const sig = `${h.date.slice(0, 10)}|${line.product}|${line.qty}|${h.supplier}`
+    const prev = purSigCount.get(sig)
+    if (prev) {
+      prev.count++
+    } else {
+      purSigCount.set(sig, { count: 1, line, header: h })
+    }
+  }
+  for (const [sig, entry] of purSigCount.entries()) {
+    if (entry.count > 1) {
+      const p = prdMap.get(entry.line.product)
+      items.push({
+        id: `qc-dup-pur-${sig}`,
+        category: 'doublon_potentiel',
+        categoryLabel: 'Doublon potentiel (Entrée)',
+        collection: 'Entrées Stock',
+        reference: entry.header.date.slice(0, 10),
+        label: p ? `${p.ref} — ${p.name}` : entry.line.product,
+        detail: `${entry.count} lignes identiques le ${entry.header.date.slice(0, 10)} (Qté : ${entry.line.qty})`,
+        fixRoute: '/entrees-de-stock',
+        fixActionLabel: 'Vérifier / Contre-passer',
+      })
+    }
+  }
+
+  // 6. Suppliers with missing contact/phone or unmatched supplier references
+  for (const s of suppliers) {
+    if (s.archived) continue
+    if (!s.phone.trim() && !s.contact.trim()) {
+      items.push({
+        id: `qc-sup-${s.id}`,
+        category: 'fournisseur_incomplet',
+        categoryLabel: 'Fournisseur incomplet',
+        collection: 'Fournisseurs',
+        reference: s.name,
+        label: s.name,
+        detail: 'Téléphone et nom du contact non renseignés',
+        fixRoute: '/fournisseurs',
+        fixActionLabel: 'Compléter la fiche',
+      })
+    }
+  }
+
+  for (const h of pur.headers) {
+    if (h.reversed_of || h.correction_status === 'reversed') continue
+    if (!supMap.has(h.supplier)) {
+      items.push({
+        id: `qc-sup-unmatched-${h.id}`,
+        category: 'fournisseur_incomplet',
+        categoryLabel: 'Fournisseur non rattaché',
+        collection: 'Entrées Stock',
+        reference: h.invoice_no || h.date.slice(0, 10),
+        label: h.supplier || 'Inconnu',
+        detail: `Bon d’entrée du ${h.date.slice(0, 10)} rattaché à un fournisseur non trouvé`,
+        fixRoute: '/fournisseurs',
+        fixActionLabel: 'Rattacher au fournisseur',
+      })
+    }
+  }
+
+  // 7. Rows noted "à vérifier" in products, purchases, exits, or suppliers
+  for (const p of activeProducts) {
+    if ((p.notes ?? '').toLowerCase().includes('vérifier') || (p.notes ?? '').toLowerCase().includes('verifier')) {
+      items.push({
+        id: `qc-ver-prd-${p.id}`,
+        category: 'a_verifier',
+        categoryLabel: 'Mention « À vérifier »',
+        collection: 'Produits',
+        reference: p.ref,
+        label: p.name,
+        detail: p.notes || 'Signalé à vérifier lors de l’import',
+        fixRoute: '/produits',
+        fixActionLabel: 'Vérifier la fiche',
+      })
+    }
+  }
+  for (const h of pur.headers) {
+    if (h.reversed_of || h.correction_status === 'reversed') continue
+    if ((h.notes ?? '').toLowerCase().includes('vérifier') || (h.notes ?? '').toLowerCase().includes('verifier')) {
+      items.push({
+        id: `qc-ver-pur-${h.id}`,
+        category: 'a_verifier',
+        categoryLabel: 'Mention « À vérifier »',
+        collection: 'Entrées Stock',
+        reference: h.invoice_no || h.date.slice(0, 10),
+        label: supMap.get(h.supplier)?.name || h.supplier,
+        detail: h.notes,
+        fixRoute: '/entrees-de-stock',
+        fixActionLabel: 'Vérifier le bon',
+      })
+    }
+  }
+  for (const h of ext.headers) {
+    if (h.reversed_of || h.correction_status === 'reversed') continue
+    if ((h.notes ?? '').toLowerCase().includes('vérifier') || (h.notes ?? '').toLowerCase().includes('verifier')) {
+      items.push({
+        id: `qc-ver-ext-${h.id}`,
+        category: 'a_verifier',
+        categoryLabel: 'Mention « À vérifier »',
+        collection: 'Sorties Stock',
+        reference: h.date.slice(0, 10),
+        label: h.destination,
+        detail: h.notes,
+        fixRoute: '/sorties-de-stock',
+        fixActionLabel: 'Vérifier la sortie',
+      })
+    }
+  }
+  for (const s of suppliers.filter((sup) => !sup.archived)) {
+    if ((s.notes ?? '').toLowerCase().includes('vérifier') || (s.notes ?? '').toLowerCase().includes('verifier')) {
+      items.push({
+        id: `qc-ver-sup-${s.id}`,
+        category: 'a_verifier',
+        categoryLabel: 'Mention « À vérifier »',
+        collection: 'Fournisseurs',
+        reference: s.name,
+        label: s.name,
+        detail: s.notes,
+        fixRoute: '/fournisseurs',
+        fixActionLabel: 'Vérifier le fournisseur',
+      })
+    }
+  }
+
+  const counts = {
+    sans_categorie: items.filter((i) => i.category === 'sans_categorie').length,
+    categorie_incoherente: items.filter((i) => i.category === 'categorie_incoherente').length,
+    sans_stock_min: items.filter((i) => i.category === 'sans_stock_min').length,
+    prix_manquant: items.filter((i) => i.category === 'prix_manquant').length,
+    doublon_potentiel: items.filter((i) => i.category === 'doublon_potentiel').length,
+    fournisseur_incomplet: items.filter((i) => i.category === 'fournisseur_incomplet').length,
+    a_verifier: items.filter((i) => i.category === 'a_verifier').length,
+    total: items.length,
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    counts,
+    items,
+  }
+}
+
+export async function exportDataQualityReportFile(
+  repo: DataRepository,
+  fmt: 'xlsx' | 'csv' = 'xlsx'
+): Promise<DatabaseQualityReport> {
+  const report = await computeDatabaseQualityReport(repo)
+  const rows = report.items.map((item) => ({
+    Catégorie_Anomalie: item.categoryLabel,
+    Module: item.collection,
+    Référence: item.reference,
+    Élément: item.label,
+    Détail: item.detail,
+    Action_Recommandée: item.fixActionLabel,
+    Écran_Cible: item.fixRoute,
+  }))
+
+  const ws = XLSX.utils.json_to_sheet(
+    rows.length > 0
+      ? rows
+      : [
+          {
+            Catégorie_Anomalie: 'Aucune anomalie',
+            Module: 'Tous',
+            Référence: '—',
+            Élément: 'Base saine',
+            Détail: 'Aucun élément signalé à corriger',
+            Action_Recommandée: '—',
+            Écran_Cible: '—',
+          },
+        ]
+  )
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'A_Corriger')
+  const stamp = new Date().toISOString().slice(0, 10)
+  if (fmt === 'csv') {
+    XLSX.writeFile(wb, `MONARQ_A_CORRIGER_${stamp}.csv`, { bookType: 'csv' })
+  } else {
+    XLSX.writeFile(wb, `MONARQ_A_CORRIGER_${stamp}.xlsx`, { bookType: 'xlsx' })
+  }
+  return report
+}
+
+

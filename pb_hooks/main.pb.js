@@ -405,3 +405,62 @@ routerAdd('POST', '/api/monarq/exits', (e) => {
   return e.json(201, { id: createdHeaderId })
 })
 
+// 6. Server-side Dashboard aggregation endpoint (enforces cuisine price hiding on the server)
+routerAdd('GET', '/api/monarq/dashboard', (e) => {
+  if (!e.auth) {
+    throw new UnauthorizedError('Authentification requise.')
+  }
+  const role = e.auth.getString('role') || 'consultation'
+  const priceHidden = role === 'cuisine'
+
+  const products = e.app.findRecordsByFilter('products', 'archived = false', 'ref', 5000, 0)
+  let totalStockVal = 0
+  let missingPriceCount = 0
+  let alertCount = 0
+  let watchCount = 0
+  let okCount = 0
+  let undefinedMinCount = 0
+
+  for (let i = 0; i < products.length; i++) {
+    const p = products[i]
+    const st = computeServerProductStock(e.app, p.id)
+    const avg = priceHidden ? null : computeServerAveragePrice(e.app, p.id)
+    const minVal = p.get('min_stock')
+    const hasMin = minVal !== null && minVal !== undefined && Number(minVal) > 0
+
+    if (!hasMin) {
+      undefinedMinCount++
+    } else if (st <= Number(minVal)) {
+      alertCount++
+    } else if (st <= Number(minVal) * 1.5) {
+      watchCount++
+    } else {
+      okCount++
+    }
+
+    if (!priceHidden) {
+      if (avg === null) {
+        missingPriceCount++
+      } else {
+        totalStockVal += Math.round(st * avg * 100) / 100
+      }
+    }
+  }
+
+  return e.json(200, {
+    serverAggregated: true,
+    role,
+    priceHidden,
+    summary: {
+      activeProductsCount: products.length,
+      totalStockValue: priceHidden ? null : Math.round(totalStockVal * 100) / 100,
+      missingPriceCount: priceHidden ? 0 : missingPriceCount,
+      alertCount,
+      watchCount,
+      okCount,
+      undefinedMinCount,
+    },
+  })
+})
+
+

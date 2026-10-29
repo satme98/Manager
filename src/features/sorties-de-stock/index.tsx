@@ -241,15 +241,28 @@ export function SortiesDeStock() {
     return () => window.removeEventListener('popstate', checkParams)
   }, [])
 
-  // List filters
+  // List filters (initialized from URL query parameters when navigated from Dashboard)
   const [searchQuery, setSearchQuery] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('from') || ''
+  })
+  const [dateTo, setDateTo] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('to') || ''
+  })
   const [destinationFilter, setDestinationFilter] = useState('all')
   const [productFilter, setProductFilter] = useState('all')
   const [withLossesFilter, setWithLossesFilter] = useState<
     'all' | 'with_losses' | 'reversed_only' | 'pending_approval'
-  >('all')
+  >(() => {
+    if (typeof window === 'undefined') return 'all'
+    const f = new URLSearchParams(window.location.search).get('filter')
+    if (f === 'with_losses' || f === 'reversed_only' || f === 'pending_approval') {
+      return f
+    }
+    return 'all'
+  })
   const [sortField, setSortField] = useState<SortField>('date')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [pageSize, setPageSize] = useState<number>(25)

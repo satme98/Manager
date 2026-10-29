@@ -5,7 +5,7 @@ export type UserRole =
   | 'cuisine'
   | 'consultation'
 
-export type PaymentStatus = 'paid' | 'unpaid'
+export type PaymentStatus = 'paid' | 'unpaid' | 'partial'
 
 export type InventoryScope = 'full' | 'category'
 
@@ -78,6 +78,59 @@ export type CorrectionStatus =
   | 'reversed'
   | 'corrected'
 
+export interface PaymentEventRecord {
+  id: string
+  purchase_id: string
+  invoice_no: string
+  supplier_id: string
+  supplier_name: string
+  date: string
+  timestamp: string
+  amount: number
+  method: string
+  reference: string
+  user_id: string
+  user_name: string
+  type: 'payment' | 'reversal'
+  reversal_reason?: string | null
+}
+
+export interface MarkPurchasePaidOptions {
+  method?: string
+  reference?: string
+  amount?: number | null
+}
+
+export type DraftPurchaseListStatus = 'Brouillon' | 'Prête' | 'Convertie'
+
+export interface DraftPurchaseListLine {
+  productId: string
+  ref: string
+  name: string
+  category: string
+  unit: string
+  currentStock: number
+  minStock: number
+  suggestedQty: number
+  orderedQty: number
+  supplierId: string
+  supplierName: string
+  unitPrice: number | null
+  estimatedCost: number | null
+}
+
+export interface DraftPurchaseListRecord {
+  id: string
+  name: string
+  date: string
+  status: DraftPurchaseListStatus
+  notes: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  lines: DraftPurchaseListLine[]
+}
+
 export interface PurchaseRecord {
   id: string
   date: string
@@ -85,6 +138,10 @@ export interface PurchaseRecord {
   invoice_no: string
   payment_status: PaymentStatus
   payment_date: string | null
+  payment_method?: string | null
+  payment_reference?: string | null
+  amount_paid?: number | null
+  payment_events?: PaymentEventRecord[]
   recorded_by: string
   recorded_by_name?: string
   notes: string
@@ -435,8 +492,19 @@ export interface DataRepository {
   }>
   markPurchasePaid(
     purchaseId: string,
-    paymentDate: string
+    paymentDate: string,
+    options?: MarkPurchasePaidOptions
   ): Promise<PurchaseRecord>
+  bulkMarkPurchasesPaid(
+    purchaseIds: string[],
+    paymentDate: string,
+    options?: MarkPurchasePaidOptions
+  ): Promise<number>
+  reversePurchasePayment(
+    purchaseId: string,
+    reason: string
+  ): Promise<PurchaseRecord>
+  listPaymentEvents(): Promise<PaymentEventRecord[]>
   reversePurchaseDocument(
     purchaseId: string,
     reason: string,
@@ -446,6 +514,15 @@ export interface DataRepository {
     header: PurchaseRecord
     lines: PurchaseLineRecord[]
   }>
+
+  // Replenishment Draft Purchase Lists
+  listDraftPurchaseLists(): Promise<DraftPurchaseListRecord[]>
+  saveDraftPurchaseList(
+    input: Omit<DraftPurchaseListRecord, 'id' | 'created_at' | 'updated_at'> & {
+      id?: string
+    }
+  ): Promise<DraftPurchaseListRecord>
+  deleteDraftPurchaseList(id: string): Promise<void>
 
   // Exits (Transactional multi-line + Reversal)
   listExits(): Promise<{
@@ -520,6 +597,13 @@ export interface DataRepository {
   listSettings(): Promise<SettingRecord[]>
   upsertSetting(key: string, value: unknown): Promise<SettingRecord>
 
-  // Backup export
+  // Dashboard Analytics (Server / Repository aggregation)
+  getDashboardAnalytics(
+    options?: import('./analytics').DashboardAnalyticsQueryOptions
+  ): Promise<import('./analytics').DashboardAnalyticsResult>
+
+  // Backup export & restore
   exportBackup(): Promise<BackupPayload>
+  restoreBackup(payload: BackupPayload): Promise<void>
 }
+

@@ -20,15 +20,20 @@ import { toast } from 'sonner'
 import { repository } from '@/data'
 import type { VatConvention } from '@/data/types'
 import { triggerManualBackupDownload } from '@/lib/backup-export'
+import { useNavigate } from '@tanstack/react-router'
 import {
+  type DataQualityCategory,
   type ImportSheetKey,
   type ImportUserDecisions,
   type IssueSeverity,
   type ParsedWorkbookResult,
   type ReconciliationReport,
   buildReconciliationCsv,
-   executeWorkbookImport,
+  computeDatabaseQualityReport,
+  executeWorkbookImport,
   exportCollectionFile,
+  exportDataQualityReportFile,
+  exportFullWorkbookMirror,
   parseAndValidateWorkbook,
 } from '@/lib/excel-import-engine'
 import { formatDateTimeFR, formatMAD } from '@/lib/format'
@@ -78,11 +83,13 @@ const PREVIEW_PAGE_SIZE = 15
 
 export function ImportExport() {
   const { auth } = useAuthStore()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const allowedToImport = canRunExcelImport(auth.user?.role)
 
-  const [activeTab, setActiveTab] = useState<'wizard' | 'export'>('wizard')
+  const [activeTab, setActiveTab] = useState<'wizard' | 'export' | 'quality'>('wizard')
+  const [qualityFilter, setQualityFilter] = useState<DataQualityCategory | 'ALL'>('ALL')
   const [currentStep, setCurrentStep] = useState<number>(1)
   const [parsingFile, setParsingFile] = useState(false)
   const [parsedWorkbook, setParsedWorkbook] =
@@ -128,6 +135,11 @@ export function ImportExport() {
   const { data: importBatches = [], refetch: refetchBatches } = useQuery({
     queryKey: ['import_batches'],
     queryFn: () => repository.listImportBatches(),
+  })
+
+  const { data: qualityReport } = useQuery({
+    queryKey: ['data-quality-report'],
+    queryFn: () => computeDatabaseQualityReport(repository),
   })
 
   async function handleFileSelected(file: File) {
@@ -351,12 +363,15 @@ export function ImportExport() {
       ) : (
         <Tabs
           value={activeTab}
-          onValueChange={(v) => setActiveTab(v as 'wizard' | 'export')}
+          onValueChange={(v) => setActiveTab(v as 'wizard' | 'export' | 'quality')}
           className='space-y-4'
         >
           <TabsList>
             <TabsTrigger value='wizard'>
               Assistant d’importation Excel (6 étapes)
+            </TabsTrigger>
+            <TabsTrigger value='quality'>
+              À corriger — Qualité des données ({qualityReport?.counts.total ?? 0})
             </TabsTrigger>
             <TabsTrigger value='export'>
               Export (.xlsx / .csv) & Lots importés ({importBatches.length})
@@ -1557,15 +1572,30 @@ export function ImportExport() {
              ================================================================ */}
           <TabsContent value='export' className='space-y-4'>
             <Card className='gap-0 py-0 shadow-none'>
-              <CardHeader className='border-b border-border px-4 py-3'>
-                <CardTitle className='text-sm font-semibold'>
-                  Exporter les collections (.xlsx & .csv) et Sauvegarde complète
-                </CardTitle>
-                <CardDescription className='text-xs'>
-                  Téléchargez à tout moment les tables de la base au format
-                  Excel (.xlsx) ou CSV, ou exportez une sauvegarde JSON
-                  complète.
-                </CardDescription>
+              <CardHeader className='flex flex-row items-center justify-between border-b border-border px-4 py-3'>
+                <div>
+                  <CardTitle className='text-sm font-semibold'>
+                    Exporter les collections (.xlsx & .csv) et Classeur complet
+                  </CardTitle>
+                  <CardDescription className='text-xs'>
+                    Téléchargez à tout moment un classeur Excel multi-feuilles identique au modèle d’origine ou exportez chaque table séparément.
+                  </CardDescription>
+                </div>
+                <Button
+                  size='sm'
+                  onClick={() =>
+                    void exportFullWorkbookMirror(repository, {
+                      hidePrices: auth.user?.role === 'cuisine',
+                    }).then(() =>
+                      toast.success(
+                        'Classeur complet MONARQ_ECONOMAT (.xlsx) téléchargé.'
+                      )
+                    )
+                  }
+                >
+                  <FileSpreadsheet className='mr-1.5 h-3.5 w-3.5' />
+                  Exporter toutes les données (.xlsx)
+                </Button>
               </CardHeader>
               <CardContent className='p-4'>
                 <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-3'>
@@ -1697,6 +1727,157 @@ export function ImportExport() {
                     )}
                   </TableBody>
                 </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* ================================================================
+              TAB 3: À CORRIGER — RAPPORT QUALITÉ DES DONNÉES
+             ================================================================ */}
+          <TabsContent value='quality' className='space-y-4'>
+            <Card className='gap-0 py-0 shadow-none'>
+              <CardHeader className='flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3'>
+                <div>
+                  <CardTitle className='text-sm font-semibold'>
+                    Diagnostic de qualité des données (« À corriger »)
+                  </CardTitle>
+                  <CardDescription className='text-xs'>
+                    Synthèse en temps réel des anomalies à corriger dans le catalogue et les mouvements : produits sans catégorie, catégories incohérentes, seuils minimums « À définir », prix manquants, doublons potentiels, fournisseurs incomplets et mentions « À vérifier ».
+                  </CardDescription>
+                </div>
+                <div className='flex items-center gap-2'>
+                  <Button
+                    size='sm'
+                    variant='outline'
+                    className='h-8 text-xs'
+                    onClick={() =>
+                      void exportDataQualityReportFile(repository, 'csv').then(() =>
+                        toast.success('Liste « À corriger » exportée en .CSV.')
+                      )
+                    }
+                  >
+                    <Download className='mr-1.5 h-3.5 w-3.5' />
+                    Exporter (.csv)
+                  </Button>
+                  <Button
+                    size='sm'
+                    className='h-8 text-xs'
+                    onClick={() =>
+                      void exportDataQualityReportFile(repository, 'xlsx').then(() =>
+                        toast.success('Rapport « À corriger » exporté en .XLSX.')
+                      )
+                    }
+                  >
+                    <FileSpreadsheet className='mr-1.5 h-3.5 w-3.5' />
+                    Exporter « À corriger » (.xlsx)
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className='space-y-4 p-4'>
+                <div className='grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4'>
+                  {(
+                    [
+                      ['ALL', 'Toutes les anomalies', qualityReport?.counts.total ?? 0],
+                      ['sans_categorie', 'Sans catégorie', qualityReport?.counts.sans_categorie ?? 0],
+                      ['categorie_incoherente', 'Catégories incohérentes', qualityReport?.counts.categorie_incoherente ?? 0],
+                      ['sans_stock_min', 'Sans stock minimum', qualityReport?.counts.sans_stock_min ?? 0],
+                      ['prix_manquant', 'Prix manquants / 0 DH', qualityReport?.counts.prix_manquant ?? 0],
+                      ['doublon_potentiel', 'Doublons potentiels', qualityReport?.counts.doublon_potentiel ?? 0],
+                      ['fournisseur_incomplet', 'Fournisseurs à compléter', qualityReport?.counts.fournisseur_incomplet ?? 0],
+                      ['a_verifier', 'Notés « À vérifier »', qualityReport?.counts.a_verifier ?? 0],
+                    ] as const
+                  ).map(([key, label, count]) => (
+                    <button
+                      key={key}
+                      type='button'
+                      onClick={() => setQualityFilter(key)}
+                      className={`flex items-center justify-between rounded-md border p-3 text-left text-xs transition-colors ${
+                        qualityFilter === key
+                          ? 'border-[#303030] bg-[#F6F6F7] font-semibold'
+                          : 'border-border bg-white hover:bg-[#F6F6F7]/50'
+                      }`}
+                    >
+                      <span className='truncate'>{label}</span>
+                      <Badge
+                        variant={count > 0 ? 'secondary' : 'outline'}
+                        className='ml-2 tabular-nums'
+                      >
+                        {count}
+                      </Badge>
+                    </button>
+                  ))}
+                </div>
+
+                <div className='overflow-hidden rounded-md border border-border'>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className='bg-muted/40'>
+                        <TableHead className='px-4 text-xs'>Type d’anomalie</TableHead>
+                        <TableHead className='text-xs'>Module</TableHead>
+                        <TableHead className='text-xs'>Référence</TableHead>
+                        <TableHead className='text-xs'>Élément</TableHead>
+                        <TableHead className='text-xs'>Détail</TableHead>
+                        <TableHead className='px-4 text-right text-xs'>Action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(qualityReport?.items ?? [])
+                        .filter(
+                          (item) =>
+                            qualityFilter === 'ALL' || item.category === qualityFilter
+                        )
+                        .slice(0, 100)
+                        .map((item) => (
+                          <TableRow key={item.id}>
+                            <TableCell className='px-4 text-xs'>
+                              <Badge
+                                variant='outline'
+                                className='border-[#B98900]/40 bg-[#B98900]/10 text-[11px] text-[#B98900]'
+                              >
+                                {item.categoryLabel}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className='text-xs'>{item.collection}</TableCell>
+                            <TableCell className='font-mono text-xs font-medium'>
+                              {item.reference}
+                            </TableCell>
+                            <TableCell className='text-xs font-medium'>
+                              {item.label}
+                            </TableCell>
+                            <TableCell className='text-xs text-muted-foreground'>
+                              {item.detail}
+                            </TableCell>
+                            <TableCell className='px-4 text-right'>
+                              <Button
+                                size='sm'
+                                variant='outline'
+                                className='h-7 text-xs'
+                                onClick={() =>
+                                  void navigate({ to: item.fixRoute as never })
+                                }
+                              >
+                                {item.fixActionLabel} →
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      {(qualityReport?.items ?? []).filter(
+                        (item) =>
+                          qualityFilter === 'ALL' || item.category === qualityFilter
+                      ).length === 0 && (
+                        <TableRow>
+                          <TableCell
+                            colSpan={6}
+                            className='py-8 text-center text-xs text-[#008060]'
+                          >
+                            <CheckCircle2 className='mx-auto mb-1.5 h-5 w-5 text-[#008060]' />
+                            Aucune anomalie « À corriger » détectée pour ce filtre.
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>

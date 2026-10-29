@@ -152,9 +152,13 @@ migrate(
           type: 'select',
           required: true,
           maxSelect: 1,
-          values: ['paid', 'unpaid'],
+          values: ['paid', 'unpaid', 'partial'],
         },
         { name: 'payment_date', type: 'text', required: false },
+        { name: 'payment_method', type: 'text', required: false },
+        { name: 'payment_reference', type: 'text', required: false },
+        { name: 'amount_paid', type: 'number', required: false, min: 0 },
+        { name: 'payment_events', type: 'json', required: false },
         {
           name: 'recorded_by',
           type: 'relation',
@@ -169,7 +173,7 @@ migrate(
           type: 'select',
           required: false,
           maxSelect: 1,
-          values: ['none', 'pending_approval', 'reversed'],
+          values: ['none', 'pending_approval', 'reversed', 'corrected'],
         },
         { name: 'pending_reversal_reason', type: 'text', required: false },
         { name: 'pending_reversal_requested_by', type: 'text', required: false },
@@ -269,7 +273,7 @@ migrate(
           type: 'select',
           required: false,
           maxSelect: 1,
-          values: ['none', 'pending_approval', 'reversed'],
+          values: ['none', 'pending_approval', 'reversed', 'corrected'],
         },
         { name: 'pending_reversal_reason', type: 'text', required: false },
         { name: 'pending_reversal_requested_by', type: 'text', required: false },
@@ -494,12 +498,14 @@ migrate(
       'details',
     ])
 
-    // 11. settings
+    // 11. settings (cuisine cannot read replenishment_draft_lists or payment_methods_list)
     const settings = new Collection({
       type: 'base',
       name: 'settings',
-      listRule: '@request.auth.id != ""',
-      viewRule: '@request.auth.id != ""',
+      listRule:
+        '@request.auth.id != "" && (@request.auth.role != "cuisine" || (key != "replenishment_draft_lists" && key != "payment_methods_list"))',
+      viewRule:
+        '@request.auth.id != "" && (@request.auth.role != "cuisine" || (key != "replenishment_draft_lists" && key != "payment_methods_list"))',
       createRule:
         '@request.auth.id != "" && (@request.auth.role = "admin" || @request.auth.role = "manager")',
       updateRule:
@@ -533,7 +539,7 @@ migrate(
           type: 'select',
           required: true,
           maxSelect: 1,
-          values: ['completed', 'partial', 'failed'],
+          values: ['completed', 'partial', 'failed', 'reversed'],
         },
         { name: 'counts', type: 'json', required: true },
         { name: 'created_at', type: 'text', required: true },

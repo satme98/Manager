@@ -9,11 +9,14 @@ import type {
   CreatePurchaseDocumentInput,
   CreateUserInput,
   DataRepository,
+  DraftPurchaseListRecord,
   ExitLineRecord,
   ExitRecord,
   ImportBatchRecord,
   InventoryLineRecord,
   InventorySessionRecord,
+  MarkPurchasePaidOptions,
+  PaymentEventRecord,
   ProductRecord,
   PurchaseLineRecord,
   PurchaseRecord,
@@ -25,6 +28,12 @@ import type {
   UserRecord,
   UserRole,
 } from './types'
+import {
+  computeDashboardAnalytics,
+  invalidateDashboardAnalyticsCache,
+  type DashboardAnalyticsQueryOptions,
+  type DashboardAnalyticsResult,
+} from './analytics'
 import {
   computeTargetedProductsStock,
   rebuildAndCompareStockCache,
@@ -302,14 +311,146 @@ export class PocketBaseDataRepository implements DataRepository {
 
   async markPurchasePaid(
     purchaseId: string,
-    paymentDate: string
+    paymentDate: string,
+    options?: MarkPurchasePaidOptions
   ): Promise<PurchaseRecord> {
+    invalidateDashboardAnalyticsCache()
+    const cleanDate =
+      paymentDate.trim() || new Date().toISOString().slice(0, 10)
     return await this.pb
       .collection('purchases')
       .update<PurchaseRecord>(purchaseId, {
         payment_status: 'paid',
-        payment_date: paymentDate.trim() || new Date().toISOString().slice(0, 10),
+        payment_date: cleanDate,
+        payment_method: options?.method?.trim() || 'Virement',
+        payment_reference: options?.reference?.trim() || '',
+        ...(options?.amount !== undefined ? { amount_paid: options.amount } : {}),
       })
+  }
+
+  async bulkMarkPurchasesPaid(
+    purchaseIds: string[],
+    paymentDate: string,
+    options?: MarkPurchasePaidOptions
+  ): Promise<number> {
+    let count = 0
+    for (const id of purchaseIds) {
+      await this.markPurchasePaid(id, paymentDate, options)
+      count++
+    }
+    return count
+  }
+
+  async reversePurchasePayment(
+    purchaseId: string,
+    reason: string
+  ): Promise<PurchaseRecord> {
+    invalidateDashboardAnalyticsCache()
+    const cleanReason = reason.trim()
+    if (!cleanReason) {
+      throw new Error(
+        'Un motif obligatoire est requis pour annuler un paiement.'
+      )
+    }
+    return await this.pb
+      .collection('purchases')
+      .update<PurchaseRecord>(purchaseId, {
+        payment_status: 'unpaid',
+        payment_date: null,
+        amount_paid: 0,
+        reversal_reason: cleanReason,
+      })
+  }
+
+  async listPaymentEvents(): Promise<PaymentEventRecord[]> {
+    const [purchases, suppliers] = await Promise.all([
+      this.listPurchases(),
+      this.listSuppliers(),
+    ])
+    const supMap = new Map(suppliers.map((s) => [s.id, s.name]))
+    const events: PaymentEventRecord[] = []
+
+    for (const p of purchases.headers) {
+      if (p.reversed_of || p.correction_status === 'reversed') continue
+      if (Array.isArray(p.payment_events) && p.payment_events.length > 0) {
+        events.push(...p.payment_events)
+      } else if (p.payment_status === 'paid') {
+        const lines = purchases.lines.filter((l) => l.purchase === p.id)
+        const docTotal = roundCurrency(
+          lines.reduce((acc, l) => acc + Number(l.amount || l.qty * l.unit_price || 0), 0)
+        )
+        events.push({
+          id: `pay-init-${p.id}`,
+          purchase_id: p.id,
+          invoice_no: p.invoice_no || 'Sans n°',
+          supplier_id: p.supplier,
+          supplier_name: supMap.get(p.supplier) ?? p.supplier,
+          date: (p.payment_date || p.date).slice(0, 10),
+          timestamp: p.created_at || p.date,
+          amount: docTotal,
+          method: p.payment_method || 'Règlement',
+          reference: p.payment_reference || '',
+          user_id: p.recorded_by,
+          user_name: p.recorded_by_name || 'Économat',
+          type: 'payment',
+        })
+      }
+    }
+    return events.sort((a, b) => b.date.localeCompare(a.date))
+  }
+
+  async listDraftPurchaseLists(): Promise<DraftPurchaseListRecord[]> {
+    const settings = await this.listSettings()
+    const found = settings.find((s) => s.key === 'replenishment_draft_lists')
+    if (!found || !Array.isArray(found.value)) return []
+    return [...(found.value as DraftPurchaseListRecord[])].sort((a, b) =>
+      b.updated_at.localeCompare(a.updated_at)
+    )
+  }
+
+  async saveDraftPurchaseList(
+    input: Omit<DraftPurchaseListRecord, 'id' | 'created_at' | 'updated_at'> & {
+      id?: string
+    }
+  ): Promise<DraftPurchaseListRecord> {
+    const current = await this.listDraftPurchaseLists()
+    const now = new Date().toISOString()
+    if (input.id) {
+      const idx = current.findIndex((l) => l.id === input.id)
+      if (idx !== -1) {
+        const updated: DraftPurchaseListRecord = {
+          ...current[idx],
+          ...input,
+          id: input.id,
+          updated_at: now,
+        }
+        current[idx] = updated
+        await this.upsertSetting('replenishment_draft_lists', current)
+        return updated
+      }
+    }
+    const created: DraftPurchaseListRecord = {
+      id: input.id || `dpl-${Date.now().toString(36)}`,
+      name: input.name.trim() || `Liste d’achat du ${now.slice(0, 10)}`,
+      date: input.date || now.slice(0, 10),
+      status: input.status || 'Brouillon',
+      notes: input.notes ?? '',
+      created_by: input.created_by || 'Économat',
+      created_at: now,
+      updated_at: now,
+      lines: input.lines,
+    }
+    current.unshift(created)
+    await this.upsertSetting('replenishment_draft_lists', current)
+    return created
+  }
+
+  async deleteDraftPurchaseList(id: string): Promise<void> {
+    const current = await this.listDraftPurchaseLists()
+    await this.upsertSetting(
+      'replenishment_draft_lists',
+      current.filter((l) => l.id !== id)
+    )
   }
 
   async reversePurchaseDocument(
@@ -747,13 +888,83 @@ export class PocketBaseDataRepository implements DataRepository {
         filter: `key = "${key}"`,
       })
     if (existing.length > 0) {
+      invalidateDashboardAnalyticsCache()
       return await this.pb
         .collection('settings')
         .update<SettingRecord>(existing[0].id, { key, value })
     }
+    invalidateDashboardAnalyticsCache()
     return await this.pb
       .collection('settings')
       .create<SettingRecord>({ key, value })
+  }
+
+  async getDashboardAnalytics(
+    options?: DashboardAnalyticsQueryOptions
+  ): Promise<DashboardAnalyticsResult> {
+    const currentUser = await this.getCurrentUser()
+    const effectiveRole: UserRole =
+      currentUser?.role === 'cuisine'
+        ? 'cuisine'
+        : (options?.role ?? currentUser?.role ?? 'consultation')
+
+    try {
+      const serverRes = await this.pb.send<DashboardAnalyticsResult>(
+        '/api/monarq/dashboard',
+        {
+          method: 'GET',
+          query: {
+            preset: options?.preset ?? 'this_month',
+            customFrom: options?.customFrom ?? '',
+            customTo: options?.customTo ?? '',
+            referenceDate: options?.referenceDate ?? '',
+          },
+        }
+      )
+      if (serverRes && serverRes.kpis && serverRes.charts) {
+        return serverRes
+      }
+    } catch {
+      // Fallback to repository-level aggregation if custom hook endpoint is not mounted
+    }
+
+    const [
+      products,
+      suppliers,
+      purchases,
+      exits,
+      inventories,
+      settings,
+    ] = await Promise.all([
+      this.listProducts(),
+      this.listSuppliers(),
+      effectiveRole === 'cuisine'
+        ? Promise.resolve({ headers: [], lines: [] })
+        : this.listPurchases(),
+      this.listExits(),
+      effectiveRole === 'cuisine'
+        ? Promise.resolve({ sessions: [], lines: [] })
+        : this.listInventories(),
+      this.listSettings(),
+    ])
+
+    return computeDashboardAnalytics(
+      {
+        products,
+        suppliers,
+        purchases: purchases.headers,
+        purchaseLines: purchases.lines,
+        exits: exits.headers,
+        exitLines: exits.lines,
+        inventorySessions: inventories.sessions,
+        inventoryLines: inventories.lines,
+        settings,
+      },
+      {
+        ...options,
+        role: effectiveRole,
+      }
+    )
   }
 
   async exportBackup(): Promise<BackupPayload> {
@@ -797,6 +1008,22 @@ export class PocketBaseDataRepository implements DataRepository {
         settings,
         import_batches: importBatches,
       },
+    }
+  }
+
+  async restoreBackup(payload: BackupPayload): Promise<void> {
+    const actor = await this.getCurrentUser()
+    if (!actor || actor.role !== 'admin') {
+      throw new Error(
+        'Seul un Administrateur peut restaurer une sauvegarde complète.'
+      )
+    }
+    if (!payload || !payload.collections) {
+      throw new Error('Fichier de sauvegarde invalide : collections manquantes.')
+    }
+
+    for (const s of payload.collections.settings ?? []) {
+      await this.upsertSetting(s.key, s.value)
     }
   }
 }

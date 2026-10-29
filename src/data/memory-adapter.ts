@@ -10,11 +10,14 @@ import type {
   CreatePurchaseDocumentInput,
   CreateUserInput,
   DataRepository,
+  DraftPurchaseListRecord,
   ExitLineRecord,
   ExitRecord,
   ImportBatchRecord,
   InventoryLineRecord,
   InventorySessionRecord,
+  MarkPurchasePaidOptions,
+  PaymentEventRecord,
   ProductRecord,
   PurchaseLineRecord,
   PurchaseRecord,
@@ -26,9 +29,16 @@ import type {
   UserRecord,
   UserRole,
 } from './types'
+import {
+  computeDashboardAnalytics,
+  invalidateDashboardAnalyticsCache,
+  type DashboardAnalyticsQueryOptions,
+  type DashboardAnalyticsResult,
+} from './analytics'
 import { canConfirmInventory, canPerformCollectionAction } from '@/lib/rbac'
 import {
   checkDocumentBeforeInventoryCutoff,
+  clearStockCache,
   computePurchaseLineAmount,
   computeTargetedProductsStock,
   normalizeProductRef,
@@ -102,8 +112,11 @@ function loadState(): MemoryDatabaseState {
 }
 
 function saveState(state: MemoryDatabaseState): void {
+  invalidateDashboardAnalyticsCache()
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    }
   } catch {
     // Ignore storage quota errors in headless tests
   }
@@ -898,7 +911,8 @@ export class MemoryDataRepository implements DataRepository {
 
   async markPurchasePaid(
     purchaseId: string,
-    paymentDate: string
+    paymentDate: string,
+    options?: MarkPurchasePaidOptions
   ): Promise<PurchaseRecord> {
     return this.withWriteLock(async () => {
       const actor = this.assertPermission('purchases', 'update')
@@ -906,23 +920,296 @@ export class MemoryDataRepository implements DataRepository {
       if (idx === -1) {
         throw new Error('Bon d’entrée introuvable.')
       }
-      const cleanDate = paymentDate.trim() || new Date().toISOString().slice(0, 10)
+      const cleanDate =
+        paymentDate.trim() || new Date().toISOString().slice(0, 10)
       const current = this.state.purchases[idx]
+      const lines = this.state.purchase_lines.filter(
+        (l) => l.purchase === purchaseId
+      )
+      const docTotal = roundCurrency(
+        lines.reduce((acc, l) => acc + Number(l.amount || l.qty * l.unit_price || 0), 0)
+      )
+      const prevPaid = roundCurrency(
+        current.payment_status === 'paid'
+          ? docTotal
+          : Number(current.amount_paid ?? 0)
+      )
+      const requestedAmt =
+        options?.amount !== undefined &&
+        options?.amount !== null &&
+        !Number.isNaN(Number(options.amount)) &&
+        Number(options.amount) > 0
+          ? roundCurrency(Number(options.amount))
+          : roundCurrency(Math.max(0, docTotal - prevPaid)) || docTotal
+
+      const nextPaid = roundCurrency(Math.min(docTotal, prevPaid + requestedAmt))
+      const nextStatus =
+        nextPaid >= docTotal - 0.01 && docTotal > 0
+          ? 'paid'
+          : nextPaid > 0
+            ? 'partial'
+            : 'paid'
+
+      const supName =
+        this.state.suppliers.find((s) => s.id === current.supplier)?.name ??
+        current.supplier
+      const method = options?.method?.trim() || 'Virement'
+      const reference = options?.reference?.trim() || ''
+
+      const event: PaymentEventRecord = {
+        id: generateId('pay'),
+        purchase_id: current.id,
+        invoice_no: current.invoice_no || 'Sans n°',
+        supplier_id: current.supplier,
+        supplier_name: supName,
+        date: cleanDate,
+        timestamp: new Date().toISOString(),
+        amount: requestedAmt,
+        method,
+        reference,
+        user_id: actor.id,
+        user_name: actor.name || actor.email,
+        type: 'payment',
+      }
+
       const updated: PurchaseRecord = {
         ...current,
-        payment_status: 'paid',
+        payment_status: nextStatus,
         payment_date: cleanDate,
+        payment_method: method,
+        payment_reference: reference,
+        amount_paid: nextStatus === 'paid' ? docTotal : nextPaid,
+        payment_events: [...(current.payment_events ?? []), event],
       }
       this.state.purchases[idx] = updated
+      saveState(this.state)
 
       this.recordAudit(actor, 'update', 'purchases', purchaseId, {
         operation: 'mark_paid',
-        invoice_no: updated.invoice_no,
+        invoice_no: updated.invoice_no || 'Sans n°',
         payment_date: cleanDate,
+        payment_status: nextStatus,
+        amount_paid: requestedAmt,
+        method,
+        reference,
       })
 
       return updated
     })
+  }
+
+  async bulkMarkPurchasesPaid(
+    purchaseIds: string[],
+    paymentDate: string,
+    options?: MarkPurchasePaidOptions
+  ): Promise<number> {
+    let count = 0
+    for (const id of purchaseIds) {
+      const existing = this.state.purchases.find((p) => p.id === id)
+      if (existing && existing.payment_status !== 'paid') {
+        await this.markPurchasePaid(id, paymentDate, options)
+        count++
+      }
+    }
+    return count
+  }
+
+  async reversePurchasePayment(
+    purchaseId: string,
+    reason: string
+  ): Promise<PurchaseRecord> {
+    return this.withWriteLock(async () => {
+      const actor = this.getActiveAuthUser()
+      if (actor.role !== 'admin' && actor.role !== 'manager') {
+        throw new Error(
+          'Seul un Manager ou Administrateur peut annuler un paiement enregistré.'
+        )
+      }
+      const cleanReason = reason.trim()
+      if (!cleanReason) {
+        throw new Error(
+          'Un motif obligatoire est requis pour annuler un paiement.'
+        )
+      }
+
+      const idx = this.state.purchases.findIndex((p) => p.id === purchaseId)
+      if (idx === -1) {
+        throw new Error('Facture / Bon d’entrée introuvable.')
+      }
+      const current = this.state.purchases[idx]
+      if (current.payment_status === 'unpaid') {
+        throw new Error('Cette facture est déjà au statut Impayé.')
+      }
+
+      const lines = this.state.purchase_lines.filter(
+        (l) => l.purchase === purchaseId
+      )
+      const docTotal = roundCurrency(
+        lines.reduce((acc, l) => acc + Number(l.amount || l.qty * l.unit_price || 0), 0)
+      )
+      const reversedAmount =
+        current.amount_paid !== undefined && current.amount_paid !== null
+          ? Number(current.amount_paid)
+          : docTotal
+
+      const supName =
+        this.state.suppliers.find((s) => s.id === current.supplier)?.name ??
+        current.supplier
+
+      const nowIso = new Date().toISOString()
+      const reversalEvent: PaymentEventRecord = {
+        id: generateId('payRev'),
+        purchase_id: current.id,
+        invoice_no: current.invoice_no || 'Sans n°',
+        supplier_id: current.supplier,
+        supplier_name: supName,
+        date: nowIso.slice(0, 10),
+        timestamp: nowIso,
+        amount: -Math.abs(reversedAmount),
+        method: current.payment_method || 'Annulation règlement',
+        reference: current.payment_reference || '',
+        user_id: actor.id,
+        user_name: actor.name || actor.email,
+        type: 'reversal',
+        reversal_reason: cleanReason,
+      }
+
+      const updated: PurchaseRecord = {
+        ...current,
+        payment_status: 'unpaid',
+        payment_date: null,
+        amount_paid: 0,
+        payment_events: [...(current.payment_events ?? []), reversalEvent],
+      }
+      this.state.purchases[idx] = updated
+      saveState(this.state)
+
+      this.recordAudit(actor, 'reversal', 'purchases', purchaseId, {
+        operation: 'reverse_payment',
+        invoice_no: current.invoice_no || 'Sans n°',
+        previous_payment_status: current.payment_status,
+        previous_payment_date: current.payment_date,
+        reversed_amount: reversedAmount,
+        reason: cleanReason,
+      })
+
+      return updated
+    })
+  }
+
+  async listPaymentEvents(): Promise<PaymentEventRecord[]> {
+    this.assertPermission('purchases', 'list')
+    const supMap = new Map(this.state.suppliers.map((s) => [s.id, s.name]))
+    const userMap = new Map(
+      this.state.users.map((u) => [u.id, u.name || u.email])
+    )
+    const events: PaymentEventRecord[] = []
+
+    for (const p of this.state.purchases) {
+      if (p.reversed_of || p.correction_status === 'reversed' || p.correction_status === 'corrected') {
+        continue
+      }
+      if (Array.isArray(p.payment_events) && p.payment_events.length > 0) {
+        events.push(...p.payment_events)
+      } else if (p.payment_status === 'paid') {
+        const lines = this.state.purchase_lines.filter((l) => l.purchase === p.id)
+        const docTotal = roundCurrency(
+          lines.reduce((acc, l) => acc + Number(l.amount || l.qty * l.unit_price || 0), 0)
+        )
+        events.push({
+          id: `pay-init-${p.id}`,
+          purchase_id: p.id,
+          invoice_no: p.invoice_no || 'Sans n°',
+          supplier_id: p.supplier,
+          supplier_name: supMap.get(p.supplier) ?? p.supplier,
+          date: (p.payment_date || p.date).slice(0, 10),
+          timestamp: p.created_at || p.date,
+          amount: docTotal,
+          method: p.payment_method || (p.import_batch_id ? 'Import Excel (OUI)' : 'Règlement initial'),
+          reference: p.payment_reference || '',
+          user_id: p.recorded_by,
+          user_name:
+            p.recorded_by_name || userMap.get(p.recorded_by) || 'Économat',
+          type: 'payment',
+        })
+      }
+    }
+
+    return events.sort((a, b) => {
+      if (b.date !== a.date) return b.date.localeCompare(a.date)
+      return b.timestamp.localeCompare(a.timestamp)
+    })
+  }
+
+  async listDraftPurchaseLists(): Promise<DraftPurchaseListRecord[]> {
+    const actor = this.getActiveAuthUser()
+    if (actor.role === 'cuisine') {
+      throw new Error(
+        'Accès refusé : le rôle Cuisine n’a pas accès aux listes d’achat fournisseurs.'
+      )
+    }
+    const setting = this.state.settings.find(
+      (s) => s.key === 'replenishment_draft_lists'
+    )
+    if (!setting || !Array.isArray(setting.value)) return []
+    return [...(setting.value as DraftPurchaseListRecord[])].sort((a, b) =>
+      b.updated_at.localeCompare(a.updated_at)
+    )
+  }
+
+  async saveDraftPurchaseList(
+    input: Omit<DraftPurchaseListRecord, 'id' | 'created_at' | 'updated_at'> & {
+      id?: string
+    }
+  ): Promise<DraftPurchaseListRecord> {
+    const actor = this.getActiveAuthUser()
+    if (actor.role === 'consultation' || actor.role === 'cuisine') {
+      throw new Error(
+        'Votre rôle ne permet pas de créer ou modifier une liste d’achat.'
+      )
+    }
+    const currentLists = await this.listDraftPurchaseLists()
+    const now = new Date().toISOString()
+
+    if (input.id) {
+      const idx = currentLists.findIndex((l) => l.id === input.id)
+      if (idx !== -1) {
+        const updated: DraftPurchaseListRecord = {
+          ...currentLists[idx],
+          ...input,
+          id: input.id,
+          updated_at: now,
+        }
+        currentLists[idx] = updated
+        await this.upsertSetting('replenishment_draft_lists', currentLists)
+        return updated
+      }
+    }
+
+    const created: DraftPurchaseListRecord = {
+      id: input.id || generateId('dpl'),
+      name: input.name.trim() || `Liste d’achat du ${now.slice(0, 10)}`,
+      date: input.date || now.slice(0, 10),
+      status: input.status || 'Brouillon',
+      notes: input.notes ?? '',
+      created_by: input.created_by || actor.name || actor.email,
+      created_at: now,
+      updated_at: now,
+      lines: input.lines,
+    }
+    currentLists.unshift(created)
+    await this.upsertSetting('replenishment_draft_lists', currentLists)
+    return created
+  }
+
+  async deleteDraftPurchaseList(id: string): Promise<void> {
+    const actor = this.getActiveAuthUser()
+    if (actor.role === 'consultation' || actor.role === 'cuisine') {
+      throw new Error('Votre rôle ne permet pas de supprimer une liste d’achat.')
+    }
+    const currentLists = await this.listDraftPurchaseLists()
+    const filtered = currentLists.filter((l) => l.id !== id)
+    await this.upsertSetting('replenishment_draft_lists', filtered)
   }
 
   async reversePurchaseDocument(
@@ -2036,7 +2323,15 @@ export class MemoryDataRepository implements DataRepository {
   }
 
   async listSettings(): Promise<SettingRecord[]> {
-    this.assertPermission('settings', 'list')
+    const actor = this.assertPermission('settings', 'list')
+    if (actor.role === 'cuisine') {
+      return this.state.settings.filter(
+        (s) =>
+          s.key !== 'replenishment_draft_lists' &&
+          s.key !== 'payment_methods_list' &&
+          s.key !== 'enable_partial_payments'
+      )
+    }
     return [...this.state.settings]
   }
 
@@ -2060,6 +2355,34 @@ export class MemoryDataRepository implements DataRepository {
     this.state.settings.push(created)
     this.recordAudit(actor, 'create', 'settings', created.id, { key, value })
     return created
+  }
+
+  async getDashboardAnalytics(
+    options?: DashboardAnalyticsQueryOptions
+  ): Promise<DashboardAnalyticsResult> {
+    const actor = this.getActiveAuthUser()
+    // Enforce server/repository role so a client cannot spoof a higher role to see prices
+    const effectiveRole: UserRole =
+      actor.role === 'cuisine' ? 'cuisine' : (options?.role ?? actor.role)
+
+    return computeDashboardAnalytics(
+      {
+        products: this.state.products,
+        suppliers: this.state.suppliers,
+        purchases: this.state.purchases,
+        purchaseLines: this.state.purchase_lines,
+        exits: this.state.exits,
+        exitLines: this.state.exit_lines,
+        inventorySessions: this.state.inventory_sessions,
+        inventoryLines: this.state.inventory_lines,
+        settings: this.state.settings,
+        users: this.state.users.map(({ passwordHash: _, ...u }) => u),
+      },
+      {
+        ...options,
+        role: effectiveRole,
+      }
+    )
   }
 
   async exportBackup(): Promise<BackupPayload> {
@@ -2093,5 +2416,55 @@ export class MemoryDataRepository implements DataRepository {
         import_batches: [...this.state.import_batches],
       },
     }
+  }
+
+  async restoreBackup(payload: BackupPayload): Promise<void> {
+    return this.withWriteLock(async () => {
+      const actor = this.getActiveAuthUser()
+      if (actor.role !== 'admin') {
+        throw new Error(
+          'Seul un Administrateur peut restaurer une sauvegarde complète.'
+        )
+      }
+      if (!payload || !payload.collections) {
+        throw new Error('Fichier de sauvegarde invalide : collections manquantes.')
+      }
+
+      const existingPasswords = new Map(
+        this.state.users.map((u) => [u.id, u.passwordHash])
+      )
+      const restoredUsers = (payload.collections.users ?? []).map((u) => ({
+        ...u,
+        passwordHash: existingPasswords.get(u.id) || 'admin1234',
+      }))
+
+      this.state = {
+        users:
+          restoredUsers.length > 0 ? restoredUsers : [...this.state.users],
+        products: [...(payload.collections.products ?? [])],
+        suppliers: [...(payload.collections.suppliers ?? [])],
+        purchases: [...(payload.collections.purchases ?? [])],
+        purchase_lines: [...(payload.collections.purchase_lines ?? [])],
+        exits: [...(payload.collections.exits ?? [])],
+        exit_lines: [...(payload.collections.exit_lines ?? [])],
+        inventory_sessions: [...(payload.collections.inventory_sessions ?? [])],
+        inventory_lines: [...(payload.collections.inventory_lines ?? [])],
+        audit_log: [...(payload.collections.audit_log ?? [])],
+        settings: [...(payload.collections.settings ?? [])],
+        import_batches: [...(payload.collections.import_batches ?? [])],
+      }
+
+      clearStockCache()
+      invalidateDashboardAnalyticsCache()
+      saveState(this.state)
+
+      this.recordAudit(actor, 'update', 'settings', 'backup_restore', {
+        operation: 'restore_backup',
+        exported_at: payload.exported_at,
+        products_restored: this.state.products.length,
+        purchases_restored: this.state.purchases.length,
+        exits_restored: this.state.exits.length,
+      })
+    })
   }
 }

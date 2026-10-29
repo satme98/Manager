@@ -216,6 +216,14 @@ export function canRunExcelImport(role: UserRole | null | undefined): boolean {
   return role === 'admin' || role === 'manager'
 }
 
+export function canReverseOrApprove(role: UserRole | null | undefined): boolean {
+  return role === 'admin' || role === 'manager'
+}
+
+export function isReadOnlyRole(role: UserRole | null | undefined): boolean {
+  return !role || role === 'consultation'
+}
+
 /**
  * Route guard matrix determining which sidebar routes a role can view/access.
  */

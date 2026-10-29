@@ -213,18 +213,38 @@ export function EntreesDeStock() {
     return () => window.removeEventListener('popstate', checkParams)
   }, [])
 
-  // List filters
+  // List filters (initialized from URL query parameters when navigated from Dashboard)
   const [searchQuery, setSearchQuery] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
-  const [supplierFilter, setSupplierFilter] = useState('all')
+  const [dateFrom, setDateFrom] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('from') || ''
+  })
+  const [dateTo, setDateTo] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('to') || ''
+  })
+  const [supplierFilter, setSupplierFilter] = useState(() => {
+    if (typeof window === 'undefined') return 'all'
+    return new URLSearchParams(window.location.search).get('supplier') || 'all'
+  })
   const [paymentFilter, setPaymentFilter] = useState<'all' | 'paid' | 'unpaid'>(
-    'all'
+    () => {
+      if (typeof window === 'undefined') return 'all'
+      const p = new URLSearchParams(window.location.search).get('paymentStatus')
+      return p === 'paid' || p === 'unpaid' ? p : 'all'
+    }
   )
   const [productFilter, setProductFilter] = useState('all')
   const [correctionFilter, setCorrectionFilter] = useState<
     'all' | 'active_only' | 'reversed_only' | 'pending_approval'
-  >('all')
+  >(() => {
+    if (typeof window === 'undefined') return 'all'
+    const c = new URLSearchParams(window.location.search).get('correction')
+    if (c === 'pending_approval' || c === 'reversed_only' || c === 'active_only') {
+      return c
+    }
+    return 'all'
+  })
   const [sortField, setSortField] = useState<SortField>('date')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [pageSize, setPageSize] = useState<number>(25)
@@ -933,7 +953,7 @@ export function EntreesDeStock() {
           invoiceNo: original.invoice_no
             ? `${original.invoice_no}-CORR`
             : '',
-          paymentStatus: original.payment_status,
+          paymentStatus: original.payment_status === 'paid' ? 'paid' : 'unpaid',
           paymentDate: original.payment_date
             ? original.payment_date.slice(0, 10)
             : getTodayIsoDate(),

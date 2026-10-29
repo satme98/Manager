@@ -8,9 +8,11 @@ import {
   Laptop,
   Moon,
   Package,
+  Receipt,
   Sun,
 } from 'lucide-react'
 import { repository } from '@/data'
+import { formatDateFR } from '@/lib/formatters'
 import { canAccessRoute, canPerformCollectionAction } from '@/lib/rbac'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSearch } from '@/context/search-provider'
@@ -52,6 +54,12 @@ export function CommandMenu() {
     enabled: open && isAuthenticated && canListSuppliers,
   })
 
+  const purchasesQuery = useQuery({
+    queryKey: ['purchases'],
+    queryFn: () => repository.listPurchases(),
+    enabled: open && isAuthenticated && activeRole !== 'cuisine',
+  })
+
   const activeProducts = React.useMemo(
     () => (productsQuery.data ?? []).filter((p) => !p.archived),
     [productsQuery.data]
@@ -60,6 +68,18 @@ export function CommandMenu() {
   const activeSuppliers = React.useMemo(
     () => (suppliersQuery.data ?? []).filter((s) => !s.archived),
     [suppliersQuery.data]
+  )
+
+  const activeInvoices = React.useMemo(
+    () =>
+      (purchasesQuery.data?.headers ?? []).filter(
+        (p) =>
+          !p.reversed_of &&
+          p.correction_status !== 'reversed' &&
+          p.correction_status !== 'corrected' &&
+          Boolean(p.invoice_no?.trim())
+      ),
+    [purchasesQuery.data]
   )
 
   const runCommand = React.useCallback(
@@ -98,6 +118,12 @@ export function CommandMenu() {
     })
   }
 
+  const navigateToInvoice = () => {
+    runCommand(() => {
+      void navigate({ to: '/factures-paiements' })
+    })
+  }
+
   const filteredGroups = sidebarData.navGroups
     .map((group) => ({
       ...group,
@@ -109,7 +135,7 @@ export function CommandMenu() {
 
   return (
     <CommandDialog modal open={open} onOpenChange={setOpen}>
-      <CommandInput placeholder='Rechercher un produit (nom, réf.), un fournisseur ou une page...' />
+      <CommandInput placeholder='Rechercher un produit (nom, réf.), une facture (N°), un fournisseur ou une page...' />
       <CommandList>
         <ScrollArea type='hover' className='h-80 pe-1'>
           <CommandEmpty>Aucun résultat trouvé.</CommandEmpty>
@@ -156,6 +182,32 @@ export function CommandMenu() {
                         {supplier.contact}
                       </span>
                     )}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </>
+          )}
+
+          {activeInvoices.length > 0 && (
+            <>
+              <CommandSeparator />
+              <CommandGroup heading='Factures & Bons d’entrée'>
+                {activeInvoices.slice(0, 60).map((inv) => (
+                  <CommandItem
+                    key={`inv-${inv.id}`}
+                    value={`Facture ${inv.invoice_no} ${inv.date}`}
+                    onSelect={navigateToInvoice}
+                  >
+                    <Receipt className='mr-2 size-4 text-[#B98900]' />
+                    <span className='font-mono text-xs font-semibold'>
+                      {inv.invoice_no}
+                    </span>
+                    <span className='ml-2 text-xs text-muted-foreground'>
+                      ({formatDateFR(inv.date)})
+                    </span>
+                    <span className='ml-auto text-xs font-medium'>
+                      {inv.payment_status === 'paid' ? 'Payé' : 'Impayé'}
+                    </span>
                   </CommandItem>
                 ))}
               </CommandGroup>
