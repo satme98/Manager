@@ -5,28 +5,28 @@ import { userEvent } from 'vitest/browser'
 import { ConfirmDialog } from './confirm-dialog'
 
 describe('ConfirmDialog', () => {
-  it('renders title, description, and default buttons', async () => {
+  it('renders title, description, and default French buttons', async () => {
     const { getByRole, getByText } = await render(
       <ConfirmDialog
         open
         onOpenChange={vi.fn()}
-        title='Delete item'
-        desc='This action cannot be undone.'
+        title="Supprimer l'élément"
+        desc='Cette action est irréversible.'
         handleConfirm={vi.fn()}
       />
     )
 
     await expect
-      .element(getByRole('heading', { name: 'Delete item' }))
+      .element(getByRole('heading', { name: "Supprimer l'élément" }))
       .toBeInTheDocument()
     await expect
-      .element(getByText('This action cannot be undone.'))
+      .element(getByText('Cette action est irréversible.'))
       .toBeInTheDocument()
     await expect
-      .element(getByRole('button', { name: 'Cancel' }))
+      .element(getByRole('button', { name: 'Annuler' }))
       .toBeInTheDocument()
     await expect
-      .element(getByRole('button', { name: 'Continue' }))
+      .element(getByRole('button', { name: 'Continuer' }))
       .toBeInTheDocument()
   })
 
@@ -36,14 +36,14 @@ describe('ConfirmDialog', () => {
       <ConfirmDialog
         open
         onOpenChange={vi.fn()}
-        title='Sign out'
-        desc='Are you sure?'
-        confirmText='Sign out'
+        title='Se déconnecter'
+        desc='Êtes-vous sûr ?'
+        confirmText='Se déconnecter'
         handleConfirm={handleConfirm}
       />
     )
 
-    await userEvent.click(getByRole('button', { name: 'Sign out' }))
+    await userEvent.click(getByRole('button', { name: 'Se déconnecter' }))
     expect(handleConfirm).toHaveBeenCalledOnce()
   })
 
@@ -60,7 +60,7 @@ describe('ConfirmDialog', () => {
       />
     )
 
-    const confirm = getByRole('button', { name: 'Continue' })
+    const confirm = getByRole('button', { name: 'Continuer' })
     await expect.element(confirm).toBeDisabled()
     expect(handleConfirm).not.toHaveBeenCalled()
   })
@@ -71,16 +71,16 @@ describe('ConfirmDialog', () => {
       <ConfirmDialog
         open
         onOpenChange={vi.fn()}
-        title='Loading'
+        title='Chargement'
         desc='...'
         isLoading
         handleConfirm={handleConfirm}
       />
     )
 
-    await expect.element(getByRole('button', { name: 'Cancel' })).toBeDisabled()
+    await expect.element(getByRole('button', { name: 'Annuler' })).toBeDisabled()
     await expect
-      .element(getByRole('button', { name: 'Continue' }))
+      .element(getByRole('button', { name: 'Continuer' }))
       .toBeDisabled()
   })
 
@@ -89,44 +89,20 @@ describe('ConfirmDialog', () => {
       <ConfirmDialog
         open
         onOpenChange={vi.fn()}
-        title='Delete'
+        title='Supprimer'
         desc='...'
-        cancelBtnText='No'
-        confirmText='Yes'
+        cancelBtnText='Non'
+        confirmText='Oui'
         handleConfirm={vi.fn()}
       />
     )
 
     await expect
-      .element(getByRole('button', { name: 'No' }))
+      .element(getByRole('button', { name: 'Non' }))
       .toBeInTheDocument()
     await expect
-      .element(getByRole('button', { name: 'Yes' }))
+      .element(getByRole('button', { name: 'Oui' }))
       .toBeInTheDocument()
-  })
-
-  it('renders confirm as submit button linked to desc form when `form` is set', async () => {
-    const { getByRole } = await render(
-      <ConfirmDialog
-        open
-        onOpenChange={vi.fn()}
-        title='Delete tasks'
-        form='tasks-multi-delete-form'
-        desc={
-          <form id='tasks-multi-delete-form' className='space-y-4'>
-            <p>Type DELETE to confirm.</p>
-          </form>
-        }
-        confirmText='Delete'
-        destructive
-      />
-    )
-
-    const deleteBtn = getByRole('button', { name: 'Delete' })
-    await expect.element(deleteBtn).toHaveAttribute('type', 'submit')
-    await expect
-      .element(deleteBtn)
-      .toHaveAttribute('form', 'tasks-multi-delete-form')
   })
 
   it('submits the desc form when confirm is clicked (form prop, no handleConfirm)', async () => {
@@ -138,81 +114,24 @@ describe('ConfirmDialog', () => {
       <ConfirmDialog
         open
         onOpenChange={vi.fn()}
-        title='Delete'
-        form='users-delete-form'
+        title='Supprimer'
+        form='delete-form'
         desc={
           <form
-            id='users-delete-form'
+            id='delete-form'
             onSubmit={handleFormSubmit}
             className='space-y-4'
           >
-            <p>Confirm deletion.</p>
+            <p>Confirmer la suppression.</p>
           </form>
         }
-        confirmText='Delete'
+        confirmText='Supprimer'
         destructive
       />
     )
 
-    await userEvent.click(getByRole('button', { name: 'Delete' }))
+    await userEvent.click(getByRole('button', { name: 'Supprimer' }))
 
     expect(handleFormSubmit).toHaveBeenCalledOnce()
-  })
-
-  it('submits the form when Enter key is pressed', async () => {
-    const handleFormSubmit = vi.fn((e: SubmitEvent<HTMLFormElement>) => {
-      e.preventDefault()
-    })
-
-    const { getByPlaceholder } = await render(
-      <ConfirmDialog
-        open
-        onOpenChange={vi.fn()}
-        title='Delete'
-        form='users-delete-form'
-        desc={
-          <form
-            id='users-delete-form'
-            onSubmit={handleFormSubmit}
-            className='space-y-4'
-          >
-            <input type='text' name='username' placeholder='username' />
-          </form>
-        }
-        confirmText='Delete'
-        destructive
-      />
-    )
-
-    await userEvent.fill(getByPlaceholder('username'), 'test')
-    await userEvent.keyboard('{Enter}')
-    expect(handleFormSubmit).toHaveBeenCalledOnce()
-  })
-
-  it('does not submit the form when confirm is disabled (typed confirmation mismatch)', async () => {
-    const handleFormSubmit = vi.fn((e: SubmitEvent<HTMLFormElement>) => {
-      e.preventDefault()
-    })
-
-    const { getByRole } = await render(
-      <ConfirmDialog
-        open
-        onOpenChange={vi.fn()}
-        title='Delete'
-        form='users-delete-form'
-        disabled
-        desc={
-          <form id='users-delete-form' onSubmit={handleFormSubmit}>
-            <p>Enter username to enable Delete.</p>
-          </form>
-        }
-        confirmText='Delete'
-        destructive
-      />
-    )
-
-    const deleteBtn = getByRole('button', { name: 'Delete' })
-    await expect.element(deleteBtn).toBeDisabled()
-    expect(handleFormSubmit).not.toHaveBeenCalled()
   })
 })

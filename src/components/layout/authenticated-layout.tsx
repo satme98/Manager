@@ -1,11 +1,15 @@
-import { Outlet } from '@tanstack/react-router'
+import { useEffect } from 'react'
+import { Outlet, useLocation, useNavigate } from '@tanstack/react-router'
+import { useAuthStore } from '@/stores/auth-store'
 import { getCookie } from '@/lib/cookies'
+import { canAccessRoute } from '@/lib/rbac'
 import { cn } from '@/lib/utils'
 import { LayoutProvider } from '@/context/layout-provider'
 import { SearchProvider } from '@/context/search-provider'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { AppSidebar } from '@/components/layout/app-sidebar'
 import { SkipToMain } from '@/components/skip-to-main'
+import { ForbiddenError } from '@/features/errors/forbidden'
 
 type AuthenticatedLayoutProps = {
   children?: React.ReactNode
@@ -13,6 +17,26 @@ type AuthenticatedLayoutProps = {
 
 export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
   const defaultOpen = getCookie('sidebar_state') !== 'false'
+  const { auth } = useAuthStore()
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    if (!auth.user || !auth.accessToken) {
+      navigate({
+        to: '/sign-in',
+        search: { redirect: location.href },
+        replace: true,
+      })
+    }
+  }, [auth.user, auth.accessToken, location.href, navigate])
+
+  if (!auth.user || !auth.accessToken) {
+    return null
+  }
+
+  const isRouteAllowed = canAccessRoute(auth.user.role, location.pathname)
+
   return (
     <SearchProvider>
       <LayoutProvider>
@@ -21,19 +45,12 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
           <AppSidebar />
           <SidebarInset
             className={cn(
-              // Set content container, so we can use container queries
               '@container/content',
-
-              // If layout is fixed, set the height
-              // to 100svh to prevent overflow
               'has-data-[layout=fixed]:h-svh',
-
-              // If layout is fixed and sidebar is inset,
-              // set the height to 100svh - spacing (total margins) to prevent overflow
               'peer-data-[variant=inset]:has-data-[layout=fixed]:h-[calc(100svh-(var(--spacing)*4))]'
             )}
           >
-            {children ?? <Outlet />}
+            {isRouteAllowed ? (children ?? <Outlet />) : <ForbiddenError />}
           </SidebarInset>
         </SidebarProvider>
       </LayoutProvider>

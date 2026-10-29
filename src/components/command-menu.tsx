@@ -1,6 +1,18 @@
 import React from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowRight, ChevronRight, Laptop, Moon, Sun } from 'lucide-react'
+import {
+  ArrowRight,
+  Building2,
+  ChevronRight,
+  Laptop,
+  Moon,
+  Package,
+  Sun,
+} from 'lucide-react'
+import { repository } from '@/data'
+import { canAccessRoute, canPerformCollectionAction } from '@/lib/rbac'
+import { useAuthStore } from '@/stores/auth-store'
 import { useSearch } from '@/context/search-provider'
 import { useTheme } from '@/context/theme-provider'
 import {
@@ -19,6 +31,36 @@ export function CommandMenu() {
   const navigate = useNavigate()
   const { setTheme } = useTheme()
   const { open, setOpen } = useSearch()
+  const { auth } = useAuthStore()
+  const activeRole = auth.user?.role ?? 'admin'
+  const isAuthenticated = Boolean(auth.user)
+  const canListSuppliers = canPerformCollectionAction(
+    activeRole,
+    'suppliers',
+    'list'
+  )
+
+  const productsQuery = useQuery({
+    queryKey: ['products'],
+    queryFn: () => repository.listProducts(),
+    enabled: open && isAuthenticated,
+  })
+
+  const suppliersQuery = useQuery({
+    queryKey: ['suppliers'],
+    queryFn: () => repository.listSuppliers(),
+    enabled: open && isAuthenticated && canListSuppliers,
+  })
+
+  const activeProducts = React.useMemo(
+    () => (productsQuery.data ?? []).filter((p) => !p.archived),
+    [productsQuery.data]
+  )
+
+  const activeSuppliers = React.useMemo(
+    () => (suppliersQuery.data ?? []).filter((s) => !s.archived),
+    [suppliersQuery.data]
+  )
 
   const runCommand = React.useCallback(
     (command: () => unknown) => {
@@ -28,13 +70,100 @@ export function CommandMenu() {
     [setOpen]
   )
 
+  const navigateToProductDetail = (productId: string) => {
+    runCommand(() => {
+      void navigate({ to: '/produits' })
+      setTimeout(() => {
+        window.history.replaceState(
+          null,
+          '',
+          `/produits?productId=${encodeURIComponent(productId)}`
+        )
+        window.dispatchEvent(new Event('monarq:navigate'))
+      }, 30)
+    })
+  }
+
+  const navigateToSupplierDetail = (supplierId: string) => {
+    runCommand(() => {
+      void navigate({ to: '/fournisseurs' })
+      setTimeout(() => {
+        window.history.replaceState(
+          null,
+          '',
+          `/fournisseurs?supplierId=${encodeURIComponent(supplierId)}`
+        )
+        window.dispatchEvent(new Event('monarq:navigate'))
+      }, 30)
+    })
+  }
+
+  const filteredGroups = sidebarData.navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) =>
+        item.url ? canAccessRoute(activeRole, String(item.url)) : true
+      ),
+    }))
+    .filter((g) => g.items.length > 0)
+
   return (
     <CommandDialog modal open={open} onOpenChange={setOpen}>
-      <CommandInput placeholder='Type a command or search...' />
+      <CommandInput placeholder='Rechercher un produit (nom, réf.), un fournisseur ou une page...' />
       <CommandList>
-        <ScrollArea type='hover' className='h-72 pe-1'>
-          <CommandEmpty>No results found.</CommandEmpty>
-          {sidebarData.navGroups.map((group) => (
+        <ScrollArea type='hover' className='h-80 pe-1'>
+          <CommandEmpty>Aucun résultat trouvé.</CommandEmpty>
+
+          {activeProducts.length > 0 && (
+            <CommandGroup heading='Produits'>
+              {activeProducts.slice(0, 150).map((product) => (
+                <CommandItem
+                  key={`prod-${product.id}`}
+                  value={`${product.ref} ${product.name} ${product.category || ''}`}
+                  onSelect={() => navigateToProductDetail(product.id)}
+                >
+                  <Package className='mr-2 size-4 text-[#008060]' />
+                  <span className='font-mono text-xs font-semibold'>
+                    {product.ref}
+                  </span>
+                  <span className='ml-2 truncate'>{product.name}</span>
+                  {product.category && (
+                    <span className='ml-auto text-xs text-muted-foreground'>
+                      {product.category}
+                    </span>
+                  )}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          )}
+
+          {canListSuppliers && activeSuppliers.length > 0 && (
+            <>
+              <CommandSeparator />
+              <CommandGroup heading='Fournisseurs'>
+                {activeSuppliers.slice(0, 80).map((supplier) => (
+                  <CommandItem
+                    key={`sup-${supplier.id}`}
+                    value={`${supplier.name} ${supplier.contact || ''} ${supplier.phone || ''}`}
+                    onSelect={() => navigateToSupplierDetail(supplier.id)}
+                  >
+                    <Building2 className='mr-2 size-4 text-[#6D7175]' />
+                    <span className='truncate font-medium'>
+                      {supplier.name}
+                    </span>
+                    {supplier.contact && (
+                      <span className='ml-auto text-xs text-muted-foreground'>
+                        {supplier.contact}
+                      </span>
+                    )}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </>
+          )}
+
+          <CommandSeparator />
+          {filteredGroups.map((group) => (
             <CommandGroup key={group.title} heading={group.title}>
               {group.items.map((navItem, i) => {
                 if (navItem.url)
@@ -71,17 +200,17 @@ export function CommandMenu() {
             </CommandGroup>
           ))}
           <CommandSeparator />
-          <CommandGroup heading='Theme'>
+          <CommandGroup heading='Thème'>
             <CommandItem onSelect={() => runCommand(() => setTheme('light'))}>
-              <Sun /> <span>Light</span>
+              <Sun /> <span>Clair</span>
             </CommandItem>
             <CommandItem onSelect={() => runCommand(() => setTheme('dark'))}>
               <Moon className='scale-90' />
-              <span>Dark</span>
+              <span>Sombre</span>
             </CommandItem>
             <CommandItem onSelect={() => runCommand(() => setTheme('system'))}>
               <Laptop />
-              <span>System</span>
+              <span>Système</span>
             </CommandItem>
           </CommandGroup>
         </ScrollArea>

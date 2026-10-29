@@ -1,203 +1,129 @@
 import {
-  Construction,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  BarChart3,
+  Boxes,
+  ClipboardCheck,
+  FileSpreadsheet,
+  History,
   LayoutDashboard,
-  Monitor,
-  Bug,
-  ListTodo,
-  FileX,
-  HelpCircle,
-  Lock,
-  Bell,
   Package,
-  Palette,
-  ServerOff,
+  Receipt,
+  RefreshCw,
   Settings,
-  Wrench,
-  UserCog,
-  UserX,
+  Trash2,
+  Truck,
   Users,
-  MessagesSquare,
-  ShieldCheck,
-  AudioWaveform,
-  Command,
-  GalleryVerticalEnd,
 } from 'lucide-react'
-import { ClerkLogo } from '@/assets/clerk-logo'
+import { Logo } from '@/assets/logo'
 import { type SidebarData } from '../types'
 
 export const sidebarData: SidebarData = {
   user: {
-    name: 'satnaing',
-    email: 'satnaingdev@gmail.com',
-    avatar: '/avatars/shadcn.jpg',
+    name: 'Économat Monarq',
+    email: 'Session non connectée',
+    avatar: '',
   },
   teams: [
     {
-      name: 'Shadcn Admin',
-      logo: Command,
-      plan: 'Vite + ShadcnUI',
-    },
-    {
-      name: 'Acme Inc',
-      logo: GalleryVerticalEnd,
-      plan: 'Enterprise',
-    },
-    {
-      name: 'Acme Corp.',
-      logo: AudioWaveform,
-      plan: 'Startup',
+      name: 'MONARQ ÉCONOMAT',
+      logo: Logo,
+      plan: 'Gestion de stock & achats',
     },
   ],
   navGroups: [
     {
-      title: 'General',
+      title: 'PRINCIPAL',
       items: [
         {
-          title: 'Dashboard',
+          title: 'Tableau de bord',
           url: '/',
           icon: LayoutDashboard,
         },
         {
-          title: 'Tasks',
-          url: '/tasks',
-          icon: ListTodo,
-        },
-        {
-          title: 'Apps',
-          url: '/apps',
+          title: 'Produits',
+          url: '/produits',
           icon: Package,
         },
         {
-          title: 'Chats',
-          url: '/chats',
-          badge: '3',
-          icon: MessagesSquare,
+          title: 'État des stocks',
+          url: '/etat-des-stocks',
+          icon: Boxes,
         },
         {
-          title: 'Users',
-          url: '/users',
+          title: 'Entrées de stock',
+          url: '/entrees-de-stock',
+          icon: ArrowDownToLine,
+        },
+        {
+          title: 'Sorties de stock',
+          url: '/sorties-de-stock',
+          icon: ArrowUpFromLine,
+        },
+        {
+          title: 'Inventaires',
+          url: '/inventaires',
+          icon: ClipboardCheck,
+        },
+      ],
+    },
+    {
+      title: 'GESTION',
+      items: [
+        {
+          title: 'Réapprovisionnement',
+          url: '/reapprovisionnement',
+          icon: RefreshCw,
+        },
+        {
+          title: 'Fournisseurs',
+          url: '/fournisseurs',
+          icon: Truck,
+        },
+        {
+          title: 'Factures & Paiements',
+          url: '/factures-paiements',
+          icon: Receipt,
+        },
+        {
+          title: 'Pertes & Gaspillage',
+          url: '/pertes-gaspillage',
+          icon: Trash2,
+        },
+      ],
+    },
+    {
+      title: 'ANALYSE',
+      items: [
+        {
+          title: 'Rapports',
+          url: '/rapports',
+          icon: BarChart3,
+        },
+        {
+          title: 'Historique des mouvements',
+          url: '/historique-mouvements',
+          icon: History,
+        },
+      ],
+    },
+    {
+      title: 'SYSTÈME',
+      items: [
+        {
+          title: 'Import / Export',
+          url: '/import-export',
+          icon: FileSpreadsheet,
+        },
+        {
+          title: 'Utilisateurs',
+          url: '/utilisateurs',
           icon: Users,
         },
         {
-          title: 'Secured by Clerk',
-          icon: ClerkLogo,
-          items: [
-            {
-              title: 'Sign In',
-              url: '/clerk/sign-in',
-            },
-            {
-              title: 'Sign Up',
-              url: '/clerk/sign-up',
-            },
-            {
-              title: 'User Management',
-              url: '/clerk/user-management',
-            },
-          ],
-        },
-      ],
-    },
-    {
-      title: 'Pages',
-      items: [
-        {
-          title: 'Auth',
-          icon: ShieldCheck,
-          items: [
-            {
-              title: 'Sign In',
-              url: '/sign-in',
-            },
-            {
-              title: 'Sign In (2 Col)',
-              url: '/sign-in-2',
-            },
-            {
-              title: 'Sign Up',
-              url: '/sign-up',
-            },
-            {
-              title: 'Forgot Password',
-              url: '/forgot-password',
-            },
-            {
-              title: 'OTP',
-              url: '/otp',
-            },
-          ],
-        },
-        {
-          title: 'Errors',
-          icon: Bug,
-          items: [
-            {
-              title: 'Unauthorized',
-              url: '/errors/unauthorized',
-              icon: Lock,
-            },
-            {
-              title: 'Forbidden',
-              url: '/errors/forbidden',
-              icon: UserX,
-            },
-            {
-              title: 'Not Found',
-              url: '/errors/not-found',
-              icon: FileX,
-            },
-            {
-              title: 'Internal Server Error',
-              url: '/errors/internal-server-error',
-              icon: ServerOff,
-            },
-            {
-              title: 'Maintenance Error',
-              url: '/errors/maintenance-error',
-              icon: Construction,
-            },
-          ],
-        },
-      ],
-    },
-    {
-      title: 'Other',
-      items: [
-        {
-          title: 'Settings',
+          title: 'Paramètres',
+          url: '/parametres',
           icon: Settings,
-          items: [
-            {
-              title: 'Profile',
-              url: '/settings',
-              icon: UserCog,
-            },
-            {
-              title: 'Account',
-              url: '/settings/account',
-              icon: Wrench,
-            },
-            {
-              title: 'Appearance',
-              url: '/settings/appearance',
-              icon: Palette,
-            },
-            {
-              title: 'Notifications',
-              url: '/settings/notifications',
-              icon: Bell,
-            },
-            {
-              title: 'Display',
-              url: '/settings/display',
-              icon: Monitor,
-            },
-          ],
-        },
-        {
-          title: 'Help Center',
-          url: '/help-center',
-          icon: HelpCircle,
         },
       ],
     },

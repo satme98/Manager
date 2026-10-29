@@ -2,12 +2,13 @@ import { useState } from 'react'
 import { z } from 'zod'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Link, useNavigate } from '@tanstack/react-router'
-import { Loader2, LogIn } from 'lucide-react'
+import { useNavigate } from '@tanstack/react-router'
+import { KeyRound, Loader2, LogIn } from 'lucide-react'
 import { toast } from 'sonner'
-import { IconFacebook, IconGithub } from '@/assets/brand-icons'
+import { repository } from '@/data'
+import { ROLE_LABELS } from '@/lib/rbac'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
-import { sleep, cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -22,12 +23,13 @@ import { PasswordInput } from '@/components/password-input'
 
 const formSchema = z.object({
   email: z.email({
-    error: (iss) => (iss.input === '' ? 'Please enter your email.' : undefined),
+    error: (iss) =>
+      iss.input === '' ? 'Veuillez saisir votre adresse e-mail.' : undefined,
   }),
   password: z
     .string()
-    .min(1, 'Please enter your password.')
-    .min(7, 'Password must be at least 7 characters long.'),
+    .min(1, 'Veuillez saisir votre mot de passe.')
+    .min(7, 'Le mot de passe doit contenir au moins 7 caractères.'),
 })
 
 interface UserAuthFormProps extends React.HTMLAttributes<HTMLFormElement> {
@@ -51,34 +53,31 @@ export function UserAuthForm({
     },
   })
 
-  function onSubmit(data: z.infer<typeof formSchema>) {
+  async function onSubmit(data: z.infer<typeof formSchema>) {
     setIsLoading(true)
+    try {
+      const { user, token } = await repository.login(data.email, data.password)
+      auth.setUser(user)
+      auth.setAccessToken(token)
+      toast.success(
+        `Bienvenue, ${user.name} (${ROLE_LABELS[user.role]}) !`
+      )
+      const targetPath = redirectTo || '/'
+      navigate({ to: targetPath, replace: true })
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Erreur de connexion. Vérifiez vos identifiants.'
+      toast.error(message)
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
-    toast.promise(sleep(2000), {
-      loading: 'Signing in...',
-      success: () => {
-        setIsLoading(false)
-
-        // Mock successful authentication with expiry computed at success time
-        const mockUser = {
-          accountNo: 'ACC001',
-          email: data.email,
-          role: ['user'],
-          exp: Date.now() + 24 * 60 * 60 * 1000, // 24 hours from now
-        }
-
-        // Set user and access token
-        auth.setUser(mockUser)
-        auth.setAccessToken('mock-access-token')
-
-        // Redirect to the stored location or default to dashboard
-        const targetPath = redirectTo || '/'
-        navigate({ to: targetPath, replace: true })
-
-        return `Welcome back, ${data.email}!`
-      },
-      error: 'Error',
-    })
+  function fillPreviewAdmin() {
+    form.setValue('email', 'admin@monarq.ma', { shouldValidate: true })
+    form.setValue('password', 'admin1234', { shouldValidate: true })
   }
 
   return (
@@ -93,9 +92,9 @@ export function UserAuthForm({
           name='email'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>Email</FormLabel>
+              <FormLabel>Adresse e-mail</FormLabel>
               <FormControl>
-                <Input placeholder='name@example.com' {...field} />
+                <Input placeholder='nom@monarq.ma' {...field} />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -105,45 +104,45 @@ export function UserAuthForm({
           control={form.control}
           name='password'
           render={({ field }) => (
-            <FormItem className='relative'>
-              <FormLabel>Password</FormLabel>
+            <FormItem>
+              <FormLabel>Mot de passe</FormLabel>
               <FormControl>
                 <PasswordInput placeholder='********' {...field} />
               </FormControl>
               <FormMessage />
-              <Link
-                to='/forgot-password'
-                className='absolute inset-e-0 -top-0.5 text-sm font-medium text-muted-foreground hover:opacity-75'
-              >
-                Forgot password?
-              </Link>
             </FormItem>
           )}
         />
-        <Button className='mt-2' disabled={isLoading}>
+        <Button className='mt-2' disabled={isLoading} type='submit'>
           {isLoading ? <Loader2 className='animate-spin' /> : <LogIn />}
-          Sign in
+          Se connecter
         </Button>
 
-        <div className='relative my-2'>
-          <div className='absolute inset-0 flex items-center'>
-            <span className='w-full border-t' />
+        {repository.adapterName === 'memory' && (
+          <div className='mt-2 rounded-md border border-border bg-muted/40 p-2.5 text-xs'>
+            <div className='flex items-center justify-between gap-2'>
+              <div>
+                <p className='font-medium text-foreground'>
+                  Aperçu AI Studio (Adaptateur mémoire)
+                </p>
+                <p className='text-muted-foreground'>
+                  Admin démo : <span className='font-mono'>admin@monarq.ma</span>{' '}
+                  / <span className='font-mono'>admin1234</span>
+                </p>
+              </div>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                className='h-7 px-2 text-xs'
+                onClick={fillPreviewAdmin}
+              >
+                <KeyRound className='mr-1 h-3 w-3' />
+                Remplir
+              </Button>
+            </div>
           </div>
-          <div className='relative flex justify-center text-xs uppercase'>
-            <span className='bg-background px-2 text-muted-foreground'>
-              Or continue with
-            </span>
-          </div>
-        </div>
-
-        <div className='grid grid-cols-2 gap-2'>
-          <Button variant='outline' type='button' disabled={isLoading}>
-            <IconGithub className='h-4 w-4' /> GitHub
-          </Button>
-          <Button variant='outline' type='button' disabled={isLoading}>
-            <IconFacebook className='h-4 w-4' /> Facebook
-          </Button>
-        </div>
+        )}
       </form>
     </Form>
   )

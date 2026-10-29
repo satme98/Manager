@@ -1,14 +1,18 @@
 import { Link } from '@tanstack/react-router'
 import {
-  BadgeCheck,
-  Bell,
   ChevronsUpDown,
-  CreditCard,
+  FileSpreadsheet,
   LogOut,
-  Sparkles,
+  Settings,
+  Shield,
+  Users,
 } from 'lucide-react'
+import { useAuthStore } from '@/stores/auth-store'
+import { canAccessRoute, ROLE_LABELS_FR } from '@/lib/rbac'
+import { getDisplayNameInitials } from '@/lib/utils'
 import useDialogState from '@/hooks/use-dialog-state'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+import { Badge } from '@/components/ui/badge'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,6 +41,13 @@ type NavUserProps = {
 export function NavUser({ user }: NavUserProps) {
   const { isMobile } = useSidebar()
   const [open, setOpen] = useDialogState()
+  const { auth } = useAuthStore()
+
+  const activeUser = auth.user
+  const displayName = activeUser?.name || activeUser?.email || user.name
+  const displayEmail = activeUser?.email ?? user.email
+  const roleLabel = activeUser ? ROLE_LABELS_FR[activeUser.role] : 'Non connecté'
+  const initials = getDisplayNameInitials(displayName)
 
   return (
     <>
@@ -49,12 +60,16 @@ export function NavUser({ user }: NavUserProps) {
                 className='data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground'
               >
                 <Avatar className='h-8 w-8 rounded-lg'>
-                  <AvatarImage src={user.avatar} alt={user.name} />
-                  <AvatarFallback className='rounded-lg'>SN</AvatarFallback>
+                  <AvatarImage src={user.avatar} alt={displayName} />
+                  <AvatarFallback className='rounded-lg bg-primary text-xs font-medium text-primary-foreground'>
+                    {initials}
+                  </AvatarFallback>
                 </Avatar>
                 <div className='grid flex-1 text-start text-sm leading-tight'>
-                  <span className='truncate font-semibold'>{user.name}</span>
-                  <span className='truncate text-xs'>{user.email}</span>
+                  <span className='truncate font-semibold'>{displayName}</span>
+                  <span className='truncate text-xs text-muted-foreground'>
+                    {roleLabel}
+                  </span>
                 </div>
                 <ChevronsUpDown className='ms-auto size-4' />
               </SidebarMenuButton>
@@ -66,52 +81,63 @@ export function NavUser({ user }: NavUserProps) {
               sideOffset={4}
             >
               <DropdownMenuLabel className='p-0 font-normal'>
-                <div className='flex items-center gap-2 px-1 py-1.5 text-start text-sm'>
+                <div className='flex items-center gap-2 px-2 py-1.5 text-start text-sm'>
                   <Avatar className='h-8 w-8 rounded-lg'>
-                    <AvatarImage src={user.avatar} alt={user.name} />
-                    <AvatarFallback className='rounded-lg'>SN</AvatarFallback>
+                    <AvatarImage src={user.avatar} alt={displayName} />
+                    <AvatarFallback className='rounded-lg bg-primary text-xs font-medium text-primary-foreground'>
+                      {initials}
+                    </AvatarFallback>
                   </Avatar>
                   <div className='grid flex-1 text-start text-sm leading-tight'>
-                    <span className='truncate font-semibold'>{user.name}</span>
-                    <span className='truncate text-xs'>{user.email}</span>
+                    <div className='flex items-center gap-1.5'>
+                      <span className='truncate font-semibold'>
+                        {displayName}
+                      </span>
+                      <Badge variant='outline' className='gap-1 text-[10px]'>
+                        <Shield className='size-2.5' />
+                        {roleLabel}
+                      </Badge>
+                    </div>
+                    <span className='truncate text-xs text-muted-foreground'>
+                      {displayEmail}
+                    </span>
                   </div>
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
-                <DropdownMenuItem>
-                  <Sparkles />
-                  Upgrade to Pro
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuItem asChild>
-                  <Link to='/settings/account'>
-                    <BadgeCheck />
-                    Account
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link to='/settings'>
-                    <CreditCard />
-                    Billing
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link to='/settings/notifications'>
-                    <Bell />
-                    Notifications
-                  </Link>
-                </DropdownMenuItem>
+                {canAccessRoute(activeUser?.role, '/utilisateurs') && (
+                  <DropdownMenuItem asChild>
+                    <Link to='/utilisateurs'>
+                      <Users className='size-4' />
+                      Utilisateurs
+                    </Link>
+                  </DropdownMenuItem>
+                )}
+                {canAccessRoute(activeUser?.role, '/import-export') && (
+                  <DropdownMenuItem asChild>
+                    <Link to='/import-export'>
+                      <FileSpreadsheet className='size-4' />
+                      Import / Export
+                    </Link>
+                  </DropdownMenuItem>
+                )}
+                {canAccessRoute(activeUser?.role, '/parametres') && (
+                  <DropdownMenuItem asChild>
+                    <Link to='/parametres'>
+                      <Settings className='size-4' />
+                      Paramètres
+                    </Link>
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 variant='destructive'
                 onClick={() => setOpen(true)}
               >
-                <LogOut />
-                Sign out
+                <LogOut className='size-4' />
+                Se déconnecter
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

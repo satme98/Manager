@@ -6,18 +6,21 @@ export function NotFoundError() {
   const { history } = useRouter()
   return (
     <div className='h-svh'>
-      <div className='m-auto flex h-full w-full flex-col items-center justify-center gap-2'>
-        <h1 className='text-[7rem] leading-tight font-bold'>404</h1>
-        <span className='font-medium'>Oops! Page Not Found!</span>
-        <p className='text-center text-muted-foreground'>
-          It seems like the page you're looking for <br />
-          does not exist or might have been removed.
+      <div className='m-auto flex h-full w-full flex-col items-center justify-center gap-2 px-4'>
+        <h1 className='text-[5rem] leading-tight font-bold text-foreground'>
+          404
+        </h1>
+        <span className='text-base font-semibold'>Page introuvable</span>
+        <p className='max-w-md text-center text-sm text-muted-foreground'>
+          La page que vous recherchez n&apos;existe pas ou a été déplacée.
         </p>
-        <div className='mt-6 flex gap-4'>
+        <div className='mt-4 flex gap-3'>
           <Button variant='outline' onClick={() => history.go(-1)}>
-            Go Back
+            Retour
           </Button>
-          <Button onClick={() => navigate({ to: '/' })}>Back to Home</Button>
+          <Button onClick={() => navigate({ to: '/' })}>
+            Tableau de bord
+          </Button>
         </div>
       </div>
     </div>
