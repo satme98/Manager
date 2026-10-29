@@ -11,9 +11,11 @@ import {
   Receipt,
   RefreshCw,
   Settings,
+  ShieldCheck,
   Trash2,
   Truck,
   Users,
+  Wrench,
 } from 'lucide-react'
 import { Logo } from '@/assets/logo'
 import { type SidebarData } from '../types'
@@ -114,6 +116,16 @@ export const sidebarData: SidebarData = {
           title: 'Import / Export',
           url: '/import-export',
           icon: FileSpreadsheet,
+        },
+        {
+          title: 'À corriger',
+          url: '/a-corriger',
+          icon: Wrench,
+        },
+        {
+          title: 'Contrôle vs Excel',
+          url: '/controle-excel',
+          icon: ShieldCheck,
         },
         {
           title: 'Utilisateurs',

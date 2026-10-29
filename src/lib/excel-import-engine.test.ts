@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import * as XLSX from 'xlsx'
 import { MemoryDataRepository } from '@/data/memory-adapter'
+import { buildMonarqCleanImportWorkbookBuffer } from '@/data/monarq-real-import-dataset'
 import {
+  computeDatabaseQualityReport,
   evaluateSimpleArithmeticFormula,
   executeWorkbookImport,
   parseAndValidateWorkbook,
   parseExcelDateToISO,
 } from './excel-import-engine'
+import { runExcelParityCheck } from './excel-parity-engine'
 
 function createFixtureWorkbookBuffer(): ArrayBuffer {
   const wb = XLSX.utils.book_new()
@@ -283,6 +286,111 @@ describe('Excel Import Wizard Engine (Stage 3)', () => {
     expect(purchasesAfterReversal.headers.length).toBe(2)
     expect(
       purchasesAfterReversal.headers.some((h) => h.reversed_of !== null)
+    ).toBe(true)
+  })
+
+  it('imports MONARQ_ECONOMAT_import_propre.xlsx with exact Stage 10 counts, 100% Golden Reference parity, and inline À corriger cleanup', async () => {
+    const repo = new MemoryDataRepository()
+    await repo.login('admin@monarq.ma', 'admin1234')
+
+    const buffer = buildMonarqCleanImportWorkbookBuffer()
+    const parsed = parseAndValidateWorkbook(
+      buffer,
+      'MONARQ_ECONOMAT_import_propre.xlsx',
+      buffer.byteLength
+    )
+
+    // Verify expected Stage 10 sheet counts
+    expect(parsed.products).toHaveLength(345)
+    expect(parsed.purchases).toHaveLength(247)
+    expect(parsed.exits).toHaveLength(143)
+    expect(parsed.inventories).toHaveLength(119)
+    expect(parsed.suppliers).toHaveLength(19)
+    expect(parsed.aVerifierRows.length).toBeGreaterThanOrEqual(250)
+
+    const decisions = {
+      vatConvention: 'TTC' as const,
+      vatConfirmed: true,
+      ambiguousPaymentDecision: 'unpaid' as const,
+      categoryMapping: parsed.defaultCategoryMapping,
+      supplierChoices: parsed.defaultSupplierChoices,
+      duplicateDecisions: parsed.defaultDuplicateDecisions,
+      updateExistingProducts: false,
+      updateExistingSuppliers: false,
+      fallbackInventoryDate: '2026-10-13',
+    }
+
+    // 1. Dry run simulation first (writes 0 records to DB)
+    const dryReport = await executeWorkbookImport(parsed, decisions, repo, {
+      dryRun: true,
+    })
+    expect(dryReport.dryRun).toBe(true)
+    expect((await repo.listProducts()).length).toBe(0)
+
+    // 2. Real import (creates automatic pre-import backup before writing)
+    const realReport = await executeWorkbookImport(parsed, decisions, repo, {
+      dryRun: false,
+    })
+    expect(realReport.dryRun).toBe(false)
+    expect(realReport.autoBackupLocation).toContain('monarq_pre_import_backup_latest')
+    expect(realReport.totalProductsInDb).toBe(345)
+
+    // 3. Run Golden Reference Parity Check ("Contrôle vs Excel")
+    const parity = await runExcelParityCheck(repo)
+    expect(parity.totalGoldenProducts).toBe(345)
+    expect(parity.totalAppProducts).toBe(345)
+    expect(parity.matchedProductsCount).toBe(345)
+    expect(parity.strictDiffProductsCount).toBe(0)
+    expect(parity.isParityOk).toBe(true)
+
+    // Verify the 6 Dashboard KPIs match Golden Reference to the centime
+    const kpiByKey = new Map(parity.kpis.map((k) => [k.key, k]))
+    expect(kpiByKey.get('valeur_stock')?.appValue).toBeCloseTo(79352.45, 2)
+    expect(kpiByKey.get('achats_cumules')?.appValue).toBeCloseTo(95989.05, 2)
+    expect(kpiByKey.get('factures_impayees')?.appValue).toBeCloseTo(26938.55, 2)
+    expect(kpiByKey.get('pertes_declarees')?.appValue).toBeCloseTo(0, 2)
+    expect(kpiByKey.get('produits_critiques')?.appValue).toBe(197)
+    expect(kpiByKey.get('valeur_sorties')?.appValue).toBeCloseTo(9905.05, 2)
+
+    // Verify Stock minimum status breakdown (243 filled -> 197 Alerte, 6 À surveiller, 40 OK, 102 À définir)
+    expect(parity.statusBreakdownApp.Alerte).toBe(197)
+    expect(parity.statusBreakdownApp['À surveiller']).toBe(6)
+    expect(parity.statusBreakdownApp.OK).toBe(40)
+    expect(parity.statusBreakdownApp['À définir']).toBe(102)
+
+    // Verify Inventory theoretical & diff parity (119/119 lines match Rule 2h)
+    expect(parity.inventoryParitySummary.totalCountLines).toBe(119)
+    expect(parity.inventoryParitySummary.countsOn2026_10_13).toBe(118)
+    expect(parity.inventoryParitySummary.countsOn2026_10_22).toBe(1)
+
+    // 4. Verify Step 4 ("À corriger") data quality report counts
+    const qualityBefore = await computeDatabaseQualityReport(repo)
+    expect(qualityBefore.counts.sans_categorie).toBe(90)
+    expect(qualityBefore.counts.sans_stock_min).toBe(102)
+    expect(qualityBefore.counts.prix_manquant).toBe(19)
+    expect(qualityBefore.counts.paiement_ambigu).toBe(14)
+    expect(qualityBefore.counts.fournisseur_manquant).toBe(14)
+    expect(qualityBefore.counts.doublon_potentiel).toBe(12)
+    expect(qualityBefore.counts.a_verifier).toBe(2)
+
+    // 5. Fix one item inline from "À corriger" and verify audit log + removal from list
+    const firstUnpriced = qualityBefore.items.find(
+      (i) => i.category === 'prix_manquant'
+    )!
+    await repo.updatePurchaseLinePrice(firstUnpriced.recordId!, 25, {
+      reason: 'Correction inline test Stage 10',
+    })
+
+    const qualityAfter = await computeDatabaseQualityReport(repo)
+    expect(qualityAfter.counts.prix_manquant).toBe(18)
+
+    const logs = await repo.listAuditLogs()
+    expect(
+      logs.some(
+        (l) =>
+          l.collection === 'purchase_lines' &&
+          l.record_id === firstUnpriced.recordId
+      )
     ).toBe(true)
   })
 })

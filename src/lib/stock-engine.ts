@@ -72,6 +72,7 @@ export interface ProductStockResult {
   totalEntries: number
   totalConsumed: number
   totalWasted: number
+  rawAveragePrice: number | null
   averagePrice: number | null
   stockValue: number | null
   priceMissing: boolean
@@ -353,12 +354,12 @@ export function getLatestConfirmedCount(
 }
 
 /**
- * Calculates the Weighted Average Price (PMP) from valid priced purchases.
- * - Only purchases with unitPrice > 0 are included in the weighted average.
- * - Reversed purchases (and their reversal entries) are strictly excluded.
- * - If total valid purchased quantity is <= 0, returns null (flagged "Prix manquant").
+ * Calculates the unrounded Weighted Average Price (PMP) from valid priced purchases
+ * exactly matching Excel's cell formula:
+ * SUM(montant achat of all purchase lines of the product) / SUM(quantité of purchase lines where Prix U > 0)
+ * where Montant achat = quantité × prix.
  */
-export function computeWeightedAveragePrice(
+export function computeRawWeightedAveragePrice(
   productId: string,
   entries: StockMovementEntry[]
 ): number | null {
@@ -380,10 +381,7 @@ export function computeWeightedAveragePrice(
 
     const unitPrice = entry.unitPrice ?? 0
     if (entry.qty > 0 && unitPrice > 0) {
-      const lineAmount =
-        entry.amount !== undefined && entry.amount !== null
-          ? entry.amount
-          : entry.qty * unitPrice
+      const lineAmount = entry.qty * unitPrice
       totalAmount += lineAmount
       totalQty += entry.qty
     }
@@ -393,7 +391,22 @@ export function computeWeightedAveragePrice(
     return null
   }
 
-  return roundCurrency(totalAmount / totalQty)
+  return totalAmount / totalQty
+}
+
+/**
+ * Calculates the Weighted Average Price (PMP) rounded to 2 decimal places for display.
+ * - Only purchases with unitPrice > 0 are included in the weighted average.
+ * - Reversed purchases (and their reversal entries) are strictly excluded.
+ * - If total valid purchased quantity is <= 0, returns null (flagged "Prix manquant").
+ */
+export function computeWeightedAveragePrice(
+  productId: string,
+  entries: StockMovementEntry[]
+): number | null {
+  const raw = computeRawWeightedAveragePrice(productId, entries)
+  if (raw === null) return null
+  return roundCurrency(raw)
 }
 
 /**
@@ -505,10 +518,12 @@ export function computeProductStock(
       wastedAfterBaseline
   )
 
-  const averagePrice = computeWeightedAveragePrice(product.id, entries)
+  const rawAveragePrice = computeRawWeightedAveragePrice(product.id, entries)
+  const averagePrice =
+    rawAveragePrice !== null ? roundCurrency(rawAveragePrice) : null
   const priceMissing = averagePrice === null
   const stockValue =
-    averagePrice !== null ? roundCurrency(stock * averagePrice) : null
+    rawAveragePrice !== null ? roundCurrency(stock * rawAveragePrice) : null
 
   const status = computeStockStatus(stock, product.minStock)
 
@@ -530,11 +545,59 @@ export function computeProductStock(
     totalEntries,
     totalConsumed,
     totalWasted,
+    rawAveragePrice,
     averagePrice,
     stockValue,
     priceMissing,
     status,
     formulaExplanationFR,
+  }
+}
+
+export interface InventoryExcelTheoreticalResult {
+  theoretical: number
+  counted: number
+  diff: number
+  status: 'OK' | 'MANQUANT' | 'EXCÉDENT'
+  valueDiff: number | null
+}
+
+/**
+ * Implements Stage 10 Rule 2h for Excel Inventaire sheet parity:
+ * - Stock théorique = Stock initial + Entrées − Sorties − Pertes (all dates, ignoring counts)
+ * - Écart = Stock réel − théorique
+ * - Status: OK if |écart| < 0.0001, MANQUANT if negative, EXCÉDENT if positive
+ * - Valeur écart = écart × prix moyen
+ */
+export function computeInventoryExcelTheoretical(params: {
+  initialStock: number
+  totalEntries: number
+  totalConsumed: number
+  totalWasted: number
+  counted: number
+  rawAveragePrice: number | null
+}): InventoryExcelTheoreticalResult {
+  const theoretical = roundQty(
+    params.initialStock +
+      params.totalEntries -
+      params.totalConsumed -
+      params.totalWasted
+  )
+  const counted = roundQty(params.counted)
+  const diff = roundQty(counted - theoretical)
+  const status: 'OK' | 'MANQUANT' | 'EXCÉDENT' =
+    Math.abs(diff) < 0.0001 ? 'OK' : diff < 0 ? 'MANQUANT' : 'EXCÉDENT'
+  const valueDiff =
+    params.rawAveragePrice !== null
+      ? roundCurrency(diff * params.rawAveragePrice)
+      : null
+
+  return {
+    theoretical,
+    counted,
+    diff,
+    status,
+    valueDiff,
   }
 }
 
@@ -1828,8 +1891,10 @@ export function rebuildAndCompareStockCache(params: {
     stockCacheMap.set(product.id, fresh)
 
     if (!product.archived) {
-      if (fresh.stockValue !== null) {
-        totalStockValue = roundCurrency(totalStockValue + fresh.stockValue)
+      if (fresh.rawAveragePrice !== null) {
+        totalStockValue += fresh.stock * fresh.rawAveragePrice
+      } else if (fresh.stockValue !== null) {
+        totalStockValue += fresh.stockValue
       }
       if (fresh.status === 'Alerte') alertCount++
       if (fresh.status === 'À surveiller') watchCount++
@@ -1843,7 +1908,7 @@ export function rebuildAndCompareStockCache(params: {
     totalProductsChecked: params.products.length,
     differencesCount: differences.length,
     differences,
-    totalStockValue,
+    totalStockValue: roundCurrency(totalStockValue),
     alertCount,
     watchCount,
     missingPriceCount,

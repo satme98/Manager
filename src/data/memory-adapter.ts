@@ -460,7 +460,8 @@ export class MemoryDataRepository implements DataRepository {
     input: Omit<ProductRecord, 'id' | 'created_at' | 'updated_at'>
   ): Promise<ProductRecord> {
     const actor = this.assertPermission('products', 'create')
-    const normalizedRef = normalizeProductRef(input.ref)
+    const rawTrimmedRef = input.ref.trim()
+    const normalizedRef = normalizeProductRef(rawTrimmedRef)
     if (!normalizedRef || !input.name.trim()) {
       throw new Error('La référence et le nom du produit sont obligatoires.')
     }
@@ -473,10 +474,14 @@ export class MemoryDataRepository implements DataRepository {
     }
 
     const now = new Date().toISOString()
+    const storedRef =
+      input.source_row_id || input.import_batch_id
+        ? rawTrimmedRef
+        : normalizedRef
     const record: ProductRecord = {
       ...input,
       id: generateId('prd'),
-      ref: normalizedRef,
+      ref: storedRef,
       name: input.name.trim(),
       notes: input.notes ?? '',
       created_at: now,
@@ -947,8 +952,11 @@ export class MemoryDataRepository implements DataRepository {
           input.payment_status === 'paid'
             ? (input.payment_date ?? now.slice(0, 10))
             : null,
+        raw_payment_status: input.raw_payment_status ?? null,
+        is_ambiguous_payment: Boolean(input.is_ambiguous_payment),
         recorded_by: actor.id,
-        recorded_by_name: actor.name || actor.email,
+        recorded_by_name:
+          input.recorded_by_name?.trim() || actor.name || actor.email,
         notes: input.notes ?? '',
         reversed_of: null,
         correction_status: 'none',
@@ -965,6 +973,8 @@ export class MemoryDataRepository implements DataRepository {
           qty: line.qty,
           unit_price: line.unit_price,
           amount: computePurchaseLineAmount(line.qty, line.unit_price),
+          is_duplicate_candidate: Boolean(line.is_duplicate_candidate),
+          duplicate_verified: Boolean(line.duplicate_verified),
           source_row_id: line.source_row_id ?? null,
           import_batch_id: input.import_batch_id ?? null,
           order_index:
@@ -1001,6 +1011,95 @@ export class MemoryDataRepository implements DataRepository {
       })
 
       return { header, lines: createdLines }
+    })
+  }
+
+  async updatePurchaseHeader(
+    purchaseId: string,
+    patch: Partial<
+      Pick<
+        PurchaseRecord,
+        | 'payment_status'
+        | 'payment_date'
+        | 'raw_payment_status'
+        | 'is_ambiguous_payment'
+        | 'notes'
+        | 'invoice_no'
+      >
+    >,
+    reason?: string
+  ): Promise<PurchaseRecord> {
+    return this.withWriteLock(async () => {
+      const actor = this.assertPermission('purchases', 'update')
+      const idx = this.state.purchases.findIndex((p) => p.id === purchaseId)
+      if (idx === -1) {
+        throw new Error('Bon d’entrée introuvable.')
+      }
+      const current = this.state.purchases[idx]
+      const updated: PurchaseRecord = {
+        ...current,
+        ...patch,
+      }
+      this.state.purchases[idx] = updated
+      saveState(this.state)
+
+      this.recordAudit(actor, 'update', 'purchases', purchaseId, {
+        operation: 'update_purchase_header',
+        changes: patch,
+        reason: reason || 'Correction dans À corriger',
+      })
+      return updated
+    })
+  }
+
+  async updatePurchaseLinePrice(
+    lineId: string,
+    unitPrice: number,
+    options?: { duplicate_verified?: boolean; reason?: string }
+  ): Promise<PurchaseLineRecord> {
+    return this.withWriteLock(async () => {
+      const actor = this.assertPermission('purchases', 'update')
+      if (unitPrice < 0) {
+        throw new Error('Le prix unitaire ne peut pas être négatif.')
+      }
+      const idx = this.state.purchase_lines.findIndex((l) => l.id === lineId)
+      if (idx === -1) {
+        throw new Error('Ligne d’achat introuvable.')
+      }
+      const current = this.state.purchase_lines[idx]
+      const previousPrice = current.unit_price
+      const updated: PurchaseLineRecord = {
+        ...current,
+        unit_price: unitPrice,
+        amount: computePurchaseLineAmount(current.qty, unitPrice),
+        ...(options?.duplicate_verified !== undefined
+          ? { duplicate_verified: options.duplicate_verified }
+          : {}),
+      }
+      this.state.purchase_lines[idx] = updated
+
+      computeTargetedProductsStock({
+        targetProductIds: [current.product],
+        products: this.state.products,
+        purchases: this.state.purchases,
+        purchaseLines: this.state.purchase_lines,
+        exits: this.state.exits,
+        exitLines: this.state.exit_lines,
+        inventorySessions: this.state.inventory_sessions,
+        inventoryLines: this.state.inventory_lines,
+      })
+
+      this.recordAudit(actor, 'update', 'purchase_lines', lineId, {
+        operation: 'update_purchase_line_price',
+        purchase_id: current.purchase,
+        product_id: current.product,
+        previous_unit_price: previousPrice,
+        new_unit_price: unitPrice,
+        duplicate_verified: updated.duplicate_verified,
+        reason: options?.reason || 'Correction de prix dans À corriger',
+      })
+
+      return updated
     })
   }
 
@@ -1585,7 +1684,8 @@ export class MemoryDataRepository implements DataRepository {
         date: input.date || now,
         destination: input.destination,
         recorded_by: actor.id,
-        recorded_by_name: actor.name || actor.email,
+        recorded_by_name:
+          input.recorded_by_name?.trim() || actor.name || actor.email,
         notes: input.notes ?? '',
         reversed_of: null,
         negative_stock_reason: input.negative_stock_reason ?? null,

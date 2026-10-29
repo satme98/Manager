@@ -28,6 +28,7 @@ export type DashboardRangePreset =
   | 'this_month'
   | 'last_month'
   | 'this_year'
+  | 'all'
   | 'custom'
 
 export type ChartGranularity = 'day' | 'week' | 'month'
@@ -496,6 +497,12 @@ export function resolveDashboardDateRange(
       presetTitle = 'Cette année'
       break
     }
+    case 'all': {
+      from = '2020-01-01'
+      to = '2099-12-31'
+      presetTitle = 'Cumulé (Tout)'
+      break
+    }
     case 'custom': {
       const cFrom = options?.customFrom?.trim().slice(0, 10)
       const cTo = options?.customTo?.trim().slice(0, 10)
@@ -754,8 +761,17 @@ export function computeDashboardAnalytics(
     linesByExitId.set(xl.exit, list)
   }
 
-  // Helper to get line unit cost for exits/losses
+  // Helper to get line unit cost for exits/losses:
+  // Per Stage 10 Step 2d: for imported movements, value of an exit/loss = qty * product's CURRENT average price.
+  // For new operational movements created in the app, use frozen unit_cost_snapshot if present.
   const resolveExitLineUnitCost = (line: ExitLineRecord): number => {
+    const isImportedMovement = Boolean(
+      line.import_batch_id || line.source_row_id
+    )
+    const st = stockMap.get(line.product)
+    if (isImportedMovement) {
+      return st?.rawAveragePrice ?? st?.averagePrice ?? 0
+    }
     if (
       line.unit_cost_snapshot !== null &&
       line.unit_cost_snapshot !== undefined &&
@@ -763,13 +779,13 @@ export function computeDashboardAnalytics(
     ) {
       return Number(line.unit_cost_snapshot)
     }
-    const st = stockMap.get(line.product)
-    return st?.averagePrice ?? 0
+    return st?.rawAveragePrice ?? st?.averagePrice ?? 0
   }
 
   // ==========================================================================
   // KPI 1 & STOCK AGGREGATES (Active products)
   // ==========================================================================
+  let rawTotalStockVal = 0
   let totalStockVal = 0
   let missingPriceCount = 0
   let alertCount = 0
@@ -799,8 +815,10 @@ export function computeDashboardAnalytics(
     const st = stockMap.get(prod.id)
     if (!st) continue
 
-    if (st.stockValue !== null) {
-      totalStockVal = roundCurrency(totalStockVal + st.stockValue)
+    if (st.rawAveragePrice !== null) {
+      rawTotalStockVal += st.stock * st.rawAveragePrice
+    } else if (st.stockValue !== null) {
+      rawTotalStockVal += st.stockValue
     }
     if (st.priceMissing) {
       missingPriceCount++
@@ -874,6 +892,8 @@ export function computeDashboardAnalytics(
     }
     categoryAggMap.set(catName, catAgg)
   }
+
+  totalStockVal = roundCurrency(rawTotalStockVal)
 
   restockCandidates.sort((a, b) => {
     const ratioA = a.minStock > 0 ? a.deficit / a.minStock : a.deficit
@@ -994,6 +1014,7 @@ export function computeDashboardAnalytics(
   // ==========================================================================
   // KPI 5, KPI 6 & EXIT / LOSS ANALYTICS
   // ==========================================================================
+  let rawPeriodLossesValue = 0
   let periodLossesValue = 0
   let periodWastedQty = 0
   let periodLossEventsCount = 0
@@ -1001,6 +1022,7 @@ export function computeDashboardAnalytics(
   let prevLossesValue = 0
   let prevLossEventsCount = 0
 
+  let rawPeriodExitsValue = 0
   let periodExitsValue = 0
   let periodConsumedQty = 0
   let periodExitsDocsCount = 0
@@ -1035,12 +1057,14 @@ export function computeDashboardAnalytics(
         const unitCost = resolveExitLineUnitCost(l)
         const consumedQty = Number(l.qty_consumed || 0)
         const wastedQty = Number(l.qty_wasted || 0)
-        const cVal = roundCurrency(consumedQty * unitCost)
-        const wVal = roundCurrency(wastedQty * unitCost)
+        const rawCVal = consumedQty * unitCost
+        const rawWVal = wastedQty * unitCost
+        const cVal = roundCurrency(rawCVal)
+        const wVal = roundCurrency(rawWVal)
 
         if (consumedQty > 0) {
           periodConsumedQty = roundQty(periodConsumedQty + consumedQty)
-          periodExitsValue = roundCurrency(periodExitsValue + cVal)
+          rawPeriodExitsValue += rawCVal
 
           const cAgg = productConsumptionAgg.get(l.product) ?? {
             qtyConsumed: 0,
@@ -1054,7 +1078,7 @@ export function computeDashboardAnalytics(
         if (wastedQty > 0) {
           periodLossEventsCount++
           periodWastedQty = roundQty(periodWastedQty + wastedQty)
-          periodLossesValue = roundCurrency(periodLossesValue + wVal)
+          rawPeriodLossesValue += rawWVal
 
           const ld = lossDayAgg.get(xDay) ?? { wastedValue: 0, wastedQty: 0 }
           ld.wastedValue = roundCurrency(ld.wastedValue + wVal)
@@ -1092,6 +1116,9 @@ export function computeDashboardAnalytics(
       }
     }
   }
+
+  periodExitsValue = roundCurrency(rawPeriodExitsValue)
+  periodLossesValue = roundCurrency(rawPeriodLossesValue)
 
   // ==========================================================================
   // INVENTORY VARIANCES (Priority panel & Chart 8)

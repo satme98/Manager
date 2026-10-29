@@ -251,9 +251,17 @@ export function canAccessRoute(
     return cuisineAllowed.includes(cleanPath)
   }
 
-  // Only roles admin and manager can import
-  if (cleanPath.startsWith('/import-export')) {
-    return role === 'admin' || role === 'manager'
+  // Only roles admin and manager can import or run Excel parity & cleanup
+  if (
+    cleanPath.startsWith('/import-export') ||
+    cleanPath.startsWith('/controle-excel') ||
+    cleanPath.startsWith('/a-corriger')
+  ) {
+    return (
+      role === 'admin' ||
+      role === 'manager' ||
+      (cleanPath.startsWith('/controle-excel') && role === 'consultation')
+    )
   }
 
   if (cleanPath.startsWith('/parametres')) {

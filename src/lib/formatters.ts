@@ -17,7 +17,7 @@ export function formatMAD(value: number | null | undefined): string {
 }
 
 export const formatCurrencyMAD = formatMAD
-
+export const formatDH = formatMAD
 
 /**
  * Formats a quantity in French locale without trailing unnecessary zeros.
@@ -35,6 +35,8 @@ export function formatQuantity(
   }).format(value)
   return unit ? `${formatted} ${unit}` : formatted
 }
+
+export const formatQty = formatQuantity
 
 /**
  * Formats a Date or ISO date string as DD/MM/YYYY.

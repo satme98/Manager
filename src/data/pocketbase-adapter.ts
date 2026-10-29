@@ -317,6 +317,46 @@ export class PocketBaseDataRepository implements DataRepository {
     return { header, lines }
   }
 
+  async updatePurchaseHeader(
+    purchaseId: string,
+    patch: Partial<
+      Pick<
+        PurchaseRecord,
+        | 'payment_status'
+        | 'payment_date'
+        | 'raw_payment_status'
+        | 'is_ambiguous_payment'
+        | 'notes'
+        | 'invoice_no'
+      >
+    >
+  ): Promise<PurchaseRecord> {
+    invalidateDashboardAnalyticsCache()
+    return await this.pb
+      .collection('purchases')
+      .update<PurchaseRecord>(purchaseId, patch)
+  }
+
+  async updatePurchaseLinePrice(
+    lineId: string,
+    unitPrice: number,
+    options?: { duplicate_verified?: boolean }
+  ): Promise<PurchaseLineRecord> {
+    invalidateDashboardAnalyticsCache()
+    const current = await this.pb
+      .collection('purchase_lines')
+      .getOne<PurchaseLineRecord>(lineId)
+    return await this.pb
+      .collection('purchase_lines')
+      .update<PurchaseLineRecord>(lineId, {
+        unit_price: unitPrice,
+        amount: roundCurrency(current.qty * unitPrice),
+        ...(options?.duplicate_verified !== undefined
+          ? { duplicate_verified: options.duplicate_verified }
+          : {}),
+      })
+  }
+
   async markPurchasePaid(
     purchaseId: string,
     paymentDate: string,

@@ -1,13 +1,15 @@
 import * as XLSX from 'xlsx'
 import type {
+  BackupPayload,
   DataRepository,
   PaymentStatus,
   VatConvention,
 } from '@/data/types'
 import {
-  computeAllProductsStock,
+  computeInventoryExcelTheoretical,
   computeProductStock,
   computePurchaseLineAmount,
+  computeRawWeightedAveragePrice,
   normalizeProductRef,
   normalizeSupplierName,
 } from './stock-engine'
@@ -25,6 +27,7 @@ export type ImportSheetKey =
   | 'Inventaire'
   | 'fournisseur'
   | 'Parametres'
+  | 'À vérifier'
 
 export const IGNORED_SHEET_NAMES = [
   'JOURNAL STOCK',
@@ -33,6 +36,16 @@ export const IGNORED_SHEET_NAMES = [
   'Etat Stock',
   'Guide',
 ] as const
+
+export interface AVerifierSheetRow {
+  rowNumber: number
+  category: string
+  sheetOrigin: string
+  reference: string
+  label: string
+  detail: string
+  suggestedAction: string
+}
 
 export interface ValidationIssue {
   id: string
@@ -88,9 +101,12 @@ export interface ParsedPurchaseRow {
   excelAmountValue: number | null
   rawPaymentStatus: string
   paymentStatus: PaymentStatus
+  isAmbiguousPayment: boolean
   rawPaymentDate: string
   paymentDate: string | null
   rawSupplier: string
+  invoiceNo: string
+  recordedByName: string
   notes: string
   isMigratedJournalNote: boolean
   isDuplicateCandidate: boolean
@@ -111,6 +127,7 @@ export interface ParsedExitRow {
   qtyConsumed: number
   qtyWasted: number
   destination: string
+  recordedByName: string
   notes: string
   isMigratedJournalNote: boolean
   isDuplicateCandidate: boolean
@@ -162,6 +179,9 @@ export interface ParsedWorkbookResult {
   purchases: ParsedPurchaseRow[]
   exits: ParsedExitRow[]
   inventories: ParsedInventoryRow[]
+  aVerifierItems: AVerifierSheetRow[]
+  aVerifierRows: AVerifierSheetRow[]
+  ambiguousPaymentCount: number
   parametres: {
     units: string[]
     categories: string[]
@@ -180,6 +200,7 @@ export interface ParsedWorkbookResult {
 export interface ImportUserDecisions {
   vatConvention: VatConvention
   vatConfirmed: boolean
+  ambiguousPaymentDecision?: 'paid' | 'unpaid'
   categoryMapping: Record<string, string>
   supplierChoices: Record<string, SupplierResolutionChoice>
   duplicateDecisions: Record<string, 'keep' | 'skip'>
@@ -203,6 +224,9 @@ export interface ReconciliationReport {
   executedAt: string
   dryRun: boolean
   vatConvention: VatConvention
+  ambiguousPaymentDecision?: 'paid' | 'unpaid'
+  autoBackupLocation?: string
+  autoBackupCreatedAt?: string
   verdict: 'GREEN' | 'RED'
   verdictMessage: string
   sheetStats: SheetReconciliationStats[]
@@ -430,6 +454,7 @@ function classifySheetName(
   if (norm === 'inventaire' || norm === 'inventaires') return 'Inventaire'
   if (norm === 'fournisseur' || norm === 'fournisseurs') return 'fournisseur'
   if (norm === 'parametres' || norm === 'parametre') return 'Parametres'
+  if (norm === 'a verifier' || norm === 'a corriger') return 'À vérifier'
 
   if (
     norm === 'journal stock' ||
@@ -448,22 +473,6 @@ function getSheetRowCount(sheet: XLSX.WorkSheet): number {
   if (!ref) return 0
   const range = XLSX.utils.decode_range(ref)
   return range.e.r + 1
-}
-
-function collectExtraNotes(
-  sheet: XLSX.WorkSheet,
-  rowIdx0: number,
-  startColIdx: number,
-  endColIdx: number
-): string {
-  const parts: string[] = []
-  for (let c = startColIdx; c <= endColIdx; c++) {
-    const val = toCleanString(getCellValue(sheet, c, rowIdx0))
-    if (val && !/^(0|FAUX|VRAI|FALSE|TRUE)$/i.test(val)) {
-      parts.push(val)
-    }
-  }
-  return parts.join(' | ')
 }
 
 /**
@@ -534,10 +543,42 @@ export function parseAndValidateWorkbook(
   const purchases: ParsedPurchaseRow[] = []
   const exits: ParsedExitRow[] = []
   const inventories: ParsedInventoryRow[] = []
+  const aVerifierItems: AVerifierSheetRow[] = []
   const parametres = {
     units: [] as string[],
     categories: [] as string[],
     destinations: [] as string[],
+  }
+
+  // 0. Parse "À vérifier" review sheet if present (DO NOT import as movement data; show as review list in wizard)
+  const aVerifierSheet = sheetMap.get('À vérifier')
+  if (aVerifierSheet) {
+    const maxR = getSheetRowCount(aVerifierSheet)
+    for (let r = 1; r < maxR; r++) {
+      const category = toCleanString(getCellValue(aVerifierSheet, 0, r))
+      const sheetOrigin = toCleanString(getCellValue(aVerifierSheet, 1, r))
+      const reference = toCleanString(getCellValue(aVerifierSheet, 2, r))
+      const label = toCleanString(getCellValue(aVerifierSheet, 3, r))
+      const detail = toCleanString(getCellValue(aVerifierSheet, 4, r))
+      const suggestedAction = toCleanString(getCellValue(aVerifierSheet, 5, r))
+      if (!category && !reference && !label && !detail) continue
+      aVerifierItems.push({
+        rowNumber: r + 1,
+        category: category || 'À vérifier',
+        sheetOrigin: sheetOrigin || 'Workbook',
+        reference,
+        label,
+        detail,
+        suggestedAction: suggestedAction || 'Vérifier dans l’écran À corriger',
+      })
+    }
+    sheetSummaries.push({
+      sheetName: 'À vérifier',
+      recognizedAs: 'À vérifier',
+      totalSheetRows: maxR,
+      realDataRows: aVerifierItems.length,
+      missingColumns: [],
+    })
   }
 
   // 1. Parse "Parametres" if present
@@ -638,7 +679,7 @@ export function parseAndValidateWorkbook(
         })
       }
 
-      if (!rawCategory) {
+      if (!rawCategory || rawCategory === '0') {
         flags.push('Catégorie manquante')
         issues.push({
           id: `iss-prd-cat-${rowNumber}`,
@@ -647,6 +688,7 @@ export function parseAndValidateWorkbook(
           field: 'Catégorie',
           severity: 'À VÉRIFIER',
           reason: 'Produit sans catégorie renseignée.',
+          rawValue: rawCategory,
           sourceRowId,
         })
       }
@@ -685,10 +727,11 @@ export function parseAndValidateWorkbook(
       const rowObj: ParsedProductRow = {
         rowNumber,
         sourceRowId,
-        rawRef,
+        rawRef: rawRef.trim(),
         canonicalRef,
         name,
-        rawCategory: rawCategory || 'Non classé',
+        rawCategory:
+          !rawCategory || rawCategory === '0' ? 'Non classé' : rawCategory,
         unit: unit || 'u',
         initialStock,
         minStock,
@@ -780,6 +823,21 @@ export function parseAndValidateWorkbook(
 
   if (purSheet) {
     const maxR = getSheetRowCount(purSheet)
+    // Detect optional columns J..Q headers (e.g. N° BL/Facture, Saisi par, Observation)
+    let invoiceColIdx = -1
+    let recordedByColIdx = -1
+    let observationColIdx = -1
+    for (let c = 9; c <= 16; c++) {
+      const h = normalizeSheetLookupName(toCleanString(getCellValue(purSheet, c, 0)))
+      if (h.includes('facture') || h.includes('bl') || h.includes('bon')) {
+        invoiceColIdx = c
+      } else if (h.includes('saisi') || h.includes('enregistre') || h.includes('operateur')) {
+        recordedByColIdx = c
+      } else if (h.includes('observation') || h.includes('note') || h.includes('remarque')) {
+        observationColIdx = c
+      }
+    }
+
     for (let r = 1; r < maxR; r++) {
       const rowNumber = r + 1
       const rawDateVal = getCellValue(purSheet, 0, r)
@@ -791,7 +849,33 @@ export function parseAndValidateWorkbook(
       const rawPayment = toCleanString(getCellValue(purSheet, 6, r))
       const rawSupplier = toCleanString(getCellValue(purSheet, 7, r))
       const rawPaymentDateVal = getCellValue(purSheet, 8, r)
-      const extraNotes = collectExtraNotes(purSheet, r, 9, 16)
+
+      const invoiceNo =
+        invoiceColIdx >= 0
+          ? toCleanString(getCellValue(purSheet, invoiceColIdx, r))
+          : ''
+      const recordedByName =
+        recordedByColIdx >= 0
+          ? toCleanString(getCellValue(purSheet, recordedByColIdx, r))
+          : ''
+
+      const noteParts: string[] = []
+      if (observationColIdx >= 0) {
+        const obs = toCleanString(getCellValue(purSheet, observationColIdx, r))
+        if (obs && !/^(0|FAUX|VRAI|FALSE|TRUE)$/i.test(obs)) {
+          noteParts.push(obs)
+        }
+      }
+      for (let c = 9; c <= 16; c++) {
+        if (c === invoiceColIdx || c === recordedByColIdx || c === observationColIdx) {
+          continue
+        }
+        const val = toCleanString(getCellValue(purSheet, c, r))
+        if (val && !/^(0|FAUX|VRAI|FALSE|TRUE)$/i.test(val)) {
+          noteParts.push(val)
+        }
+      }
+      const extraNotes = noteParts.join(' | ')
 
       // Skip empty template rows (up to row 5000)
       if (
@@ -893,25 +977,28 @@ export function parseAndValidateWorkbook(
       // Payment status OUI/NON check
       const upperPay = rawPayment.toUpperCase()
       let paymentStatus: PaymentStatus = 'unpaid'
+      let isAmbiguousPayment = false
       if (upperPay === 'OUI' || upperPay === 'RÉGLÉ' || upperPay === 'REGLE') {
         paymentStatus = 'paid'
       } else if (
         upperPay === 'NON' ||
         upperPay === 'NON RÉGLÉ' ||
-        upperPay === 'NON REGLE' ||
-        upperPay === ''
+        upperPay === 'NON REGLE'
       ) {
         paymentStatus = 'unpaid'
       } else {
-        flags.push(`Paiement: ${rawPayment}`)
+        isAmbiguousPayment = true
+        paymentStatus = 'unpaid'
+        const displayPay = rawPayment || '(Vide)'
+        flags.push(`Paiement: ${displayPay}`)
         issues.push({
           id: `iss-pur-pay-${rowNumber}`,
           sheet: 'Entrées Stock',
           rowNumber,
           field: 'Paiement facturé',
           severity: 'À VÉRIFIER',
-          reason: `Valeur de paiement autre que OUI/NON (« ${rawPayment} »), mappée sur Impayé par sécurité.`,
-          rawValue: rawPayment,
+          reason: `Valeur de paiement autre que OUI/NON (« ${displayPay} »), mappée selon votre choix de confirmation.`,
+          rawValue: displayPay,
           sourceRowId,
         })
       }
@@ -1017,7 +1104,7 @@ export function parseAndValidateWorkbook(
         sourceRowId,
         rawDate: toCleanString(rawDateVal),
         date,
-        rawRef,
+        rawRef: rawRef.trim(),
         canonicalRef,
         productName:
           productName || productRefLookup.get(canonicalRef)?.name || '',
@@ -1027,9 +1114,12 @@ export function parseAndValidateWorkbook(
         excelAmountValue,
         rawPaymentStatus: rawPayment,
         paymentStatus,
+        isAmbiguousPayment,
         rawPaymentDate: toCleanString(rawPaymentDateVal),
         paymentDate,
         rawSupplier: supplierKey,
+        invoiceNo,
+        recordedByName,
         notes: extraNotes,
         isMigratedJournalNote,
         isDuplicateCandidate,
@@ -1054,6 +1144,17 @@ export function parseAndValidateWorkbook(
   const seenExitSignatures = new Map<string, number>()
   if (extSheet) {
     const maxR = getSheetRowCount(extSheet)
+    let recordedByColIdx = -1
+    let observationColIdx = -1
+    for (let c = 9; c <= 16; c++) {
+      const h = normalizeSheetLookupName(toCleanString(getCellValue(extSheet, c, 0)))
+      if (h.includes('saisi') || h.includes('enregistre') || h.includes('operateur')) {
+        recordedByColIdx = c
+      } else if (h.includes('observation') || h.includes('note') || h.includes('remarque')) {
+        observationColIdx = c
+      }
+    }
+
     for (let r = 1; r < maxR; r++) {
       const rowNumber = r + 1
       const rawDateVal = getCellValue(extSheet, 0, r)
@@ -1064,7 +1165,25 @@ export function parseAndValidateWorkbook(
       // F (col 5), G (col 6), H (col 7) are formulas -> ignore!
       const destination =
         toCleanString(getCellValue(extSheet, 8, r)) || 'Cuisine'
-      const extraNotes = collectExtraNotes(extSheet, r, 9, 16)
+      const recordedByName =
+        recordedByColIdx >= 0
+          ? toCleanString(getCellValue(extSheet, recordedByColIdx, r))
+          : ''
+      const noteParts: string[] = []
+      if (observationColIdx >= 0) {
+        const obs = toCleanString(getCellValue(extSheet, observationColIdx, r))
+        if (obs && !/^(0|FAUX|VRAI|FALSE|TRUE)$/i.test(obs)) {
+          noteParts.push(obs)
+        }
+      }
+      for (let c = 9; c <= 16; c++) {
+        if (c === recordedByColIdx || c === observationColIdx) continue
+        const val = toCleanString(getCellValue(extSheet, c, r))
+        if (val && !/^(0|FAUX|VRAI|FALSE|TRUE)$/i.test(val)) {
+          noteParts.push(val)
+        }
+      }
+      const extraNotes = noteParts.join(' | ')
 
       if (
         !toCleanString(rawDateVal) &&
@@ -1180,13 +1299,14 @@ export function parseAndValidateWorkbook(
         sourceRowId,
         rawDate: toCleanString(rawDateVal),
         date,
-        rawRef,
+        rawRef: rawRef.trim(),
         canonicalRef,
         productName:
           productName || productRefLookup.get(canonicalRef)?.name || '',
         qtyConsumed,
         qtyWasted,
         destination,
+        recordedByName,
         notes: extraNotes,
         isMigratedJournalNote,
         isDuplicateCandidate,
@@ -1228,7 +1348,14 @@ export function parseAndValidateWorkbook(
       const rawRef = toCleanString(getCellValue(invSheet, 0, r))
       const productName = toCleanString(getCellValue(invSheet, 1, r))
       const unit = toCleanString(getCellValue(invSheet, 2, r))
-      const rawDateVal = getCellValue(invSheet, 8, r) // Column I: Date inventaire
+      const colI = getCellValue(invSheet, 8, r)
+      const colG = getCellValue(invSheet, 6, r)
+      const rawDateVal =
+        parseExcelDateToISO(colI) !== null
+          ? colI
+          : parseExcelDateToISO(colG) !== null
+            ? colG
+            : colI || colG
 
       const canonicalRef = normalizeProductRef(rawRef)
       const date = parseExcelDateToISO(rawDateVal)
@@ -1329,6 +1456,9 @@ export function parseAndValidateWorkbook(
   const distinctInventoryDates = Array.from(
     new Set(inventories.map((i) => i.date).filter((d): d is string => Boolean(d)))
   ).sort()
+  const ambiguousPaymentCount = purchases.filter(
+    (p) => p.isAmbiguousPayment
+  ).length
 
   return {
     fileName,
@@ -1342,6 +1472,9 @@ export function parseAndValidateWorkbook(
     purchases,
     exits,
     inventories,
+    aVerifierItems,
+    aVerifierRows: aVerifierItems,
+    ambiguousPaymentCount,
     parametres,
     issues,
     distinctProductCategories,
@@ -1352,6 +1485,76 @@ export function parseAndValidateWorkbook(
     missingMinStockCount,
     distinctInventoryDates,
   }
+}
+
+export const parseWorkbookBuffer = parseAndValidateWorkbook
+
+export function buildDefaultImportDecisions(
+  parsed: ParsedWorkbookResult
+): ImportUserDecisions {
+  return {
+    vatConvention: 'TTC',
+    vatConfirmed: true,
+    ambiguousPaymentDecision: 'unpaid',
+    categoryMapping: { ...parsed.defaultCategoryMapping },
+    supplierChoices: { ...parsed.defaultSupplierChoices },
+    duplicateDecisions: { ...parsed.defaultDuplicateDecisions },
+    updateExistingProducts: false,
+    updateExistingSuppliers: false,
+    fallbackInventoryDate: parsed.distinctInventoryDates[0] || '2026-10-13',
+  }
+}
+
+const PRE_IMPORT_BACKUP_STORAGE_KEY = 'monarq_pre_import_backup_latest'
+let latestPreImportBackupMemory: {
+  location: string
+  createdAt: string
+  fileName: string
+  payload: BackupPayload
+} | null = null
+
+export function getLatestPreImportBackup(): {
+  location: string
+  createdAt: string
+  fileName: string
+  payload: BackupPayload
+} | null {
+  if (latestPreImportBackupMemory) return latestPreImportBackupMemory
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(PRE_IMPORT_BACKUP_STORAGE_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (parsed && parsed.payload) {
+          latestPreImportBackupMemory = parsed
+          return parsed
+        }
+      }
+    }
+  } catch {
+    // Ignore storage read error
+  }
+  return null
+}
+
+export async function restorePreImportBackup(
+  repo: DataRepository
+): Promise<boolean> {
+  const backup = getLatestPreImportBackup()
+  if (!backup) {
+    const settings = await repo.listSettings()
+    const saved = settings.find((s) => s.key === 'last_pre_import_backup')
+    if (saved && saved.value && typeof saved.value === 'object') {
+      const obj = saved.value as { payload?: BackupPayload }
+      if (obj.payload) {
+        await repo.restoreBackup(obj.payload)
+        return true
+      }
+    }
+    return false
+  }
+  await repo.restoreBackup(backup.payload)
+  return true
 }
 
 /**
@@ -1483,6 +1686,50 @@ export async function executeWorkbookImport(
       rowsSkipped: 0,
       rowsFlagged: 0,
     },
+    'À vérifier': {
+      sheet: 'À vérifier',
+      rowsRead: parsed.aVerifierRows.length,
+      rowsImported: 0,
+      rowsSkipped: parsed.aVerifierRows.length,
+      rowsFlagged: parsed.aVerifierRows.length,
+    },
+  }
+
+  let autoBackupLocation: string | undefined
+  let autoBackupCreatedAt: string | undefined
+
+  if (!dryRun) {
+    reportProgress(10, 'Création de la sauvegarde automatique pré-import...')
+    const backup = await repo.exportBackup()
+    autoBackupCreatedAt = backup.exported_at
+    autoBackupLocation = `localStorage["monarq_pre_import_backup_latest"] + settings["last_pre_import_backup"] (${backup.exported_at})`
+    latestPreImportBackupMemory = {
+      location: autoBackupLocation,
+      createdAt: autoBackupCreatedAt,
+      fileName: parsed.fileName,
+      payload: backup,
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(
+          'monarq_pre_import_backup_latest',
+          JSON.stringify(backup)
+        )
+      } catch {
+        // Ignore storage quota warning
+      }
+    }
+    await repo.upsertSetting('last_pre_import_backup', {
+      created_at: backup.exported_at,
+      location: 'localStorage["monarq_pre_import_backup_latest"]',
+      counts: {
+        products: backup.collections.products.length,
+        suppliers: backup.collections.suppliers.length,
+        purchases: backup.collections.purchases.length,
+        exits: backup.collections.exits.length,
+        inventories: backup.collections.inventory_sessions.length,
+      },
+    })
   }
 
   // 1. Settings (VAT convention + Parametres lists)
@@ -1581,6 +1828,7 @@ export async function executeWorkbookImport(
           email: '',
           payment_terms: '',
           notes: 'Créé automatiquement lors de l’import des Entrées Stock',
+          missing_from_supplier_sheet: true,
           import_batch_id: batchSourceId,
         })
         supplierByNormName.set(normTarget, created)
@@ -1593,6 +1841,7 @@ export async function executeWorkbookImport(
           email: '',
           payment_terms: '',
           notes: '',
+          missing_from_supplier_sheet: true,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
@@ -1629,9 +1878,10 @@ export async function executeWorkbookImport(
         statsMap['Base Produits'].rowsSkipped++
       }
     } else {
+      const preservedRef = prd.rawRef.trim() || prd.canonicalRef
       if (!dryRun) {
         const created = await repo.createProduct({
-          ref: prd.canonicalRef,
+          ref: preservedRef,
           name: prd.name,
           category: mappedCategory,
           unit: prd.unit,
@@ -1646,7 +1896,7 @@ export async function executeWorkbookImport(
       } else {
         productByRef.set(prd.canonicalRef, {
           id: `sim-prd-${prd.canonicalRef}`,
-          ref: prd.canonicalRef,
+          ref: preservedRef,
           name: prd.name,
           category: mappedCategory,
           unit: prd.unit,
@@ -1666,6 +1916,9 @@ export async function executeWorkbookImport(
   reportProgress(60, 'Importation des Entrées Stock...')
   let totalPurchaseAmountExcel = 0
   let totalPurchaseAmountImported = 0
+
+  const resolvedAmbiguousPaymentStatus: PaymentStatus =
+    decisions.ambiguousPaymentDecision === 'paid' ? 'paid' : 'unpaid'
 
   for (const pur of parsed.purchases) {
     totalPurchaseAmountExcel = round2(
@@ -1701,14 +1954,24 @@ export async function executeWorkbookImport(
       normalizeSupplierName(targetSupplierName)
     )
 
+    const effectivePaymentStatus: PaymentStatus = pur.isAmbiguousPayment
+      ? resolvedAmbiguousPaymentStatus
+      : pur.paymentStatus
+
     if (!dryRun) {
       await repo.createPurchaseDocument({
         date: pur.date,
         supplier: supplier?.id ?? targetSupplierName,
-        invoice_no: '', // Do not invent invoice numbers
-        payment_status: pur.paymentStatus,
-        payment_date: pur.paymentDate,
+        invoice_no: pur.invoiceNo || '',
+        payment_status: effectivePaymentStatus,
+        payment_date:
+          effectivePaymentStatus === 'paid'
+            ? pur.paymentDate || pur.date
+            : null,
         notes: pur.notes,
+        raw_payment_status: pur.rawPaymentStatus,
+        is_ambiguous_payment: pur.isAmbiguousPayment,
+        recorded_by_name: pur.recordedByName,
         import_batch_id: batchSourceId,
         order_index: pur.orderIndex,
         lines: [
@@ -1718,6 +1981,7 @@ export async function executeWorkbookImport(
             unit_price: pur.unitPrice ?? 0,
             source_row_id: pur.sourceRowId,
             order_index: pur.orderIndex,
+            is_duplicate_candidate: pur.isDuplicateCandidate,
           },
         ],
       })
@@ -1760,6 +2024,7 @@ export async function executeWorkbookImport(
         date: ext.date,
         destination: ext.destination,
         notes: ext.notes,
+        recorded_by_name: ext.recordedByName,
         skipNegativeStockGuard: true,
         import_batch_id: batchSourceId,
         order_index: ext.orderIndex,
@@ -1770,6 +2035,7 @@ export async function executeWorkbookImport(
             qty_wasted: ext.qtyWasted,
             source_row_id: ext.sourceRowId,
             order_index: ext.orderIndex,
+            is_duplicate_candidate: ext.isDuplicateCandidate,
           },
         ],
       })
@@ -1801,6 +2067,33 @@ export async function executeWorkbookImport(
     invByDate.set(sessionDate, list)
   }
 
+  // Prepare movements for Rule 2h theoretical calculation on imported inventories
+  const allEntriesForInv = parsed.purchases
+    .filter((p) => !p.blocking && p.qty !== null && p.date)
+    .map((p) => {
+      const prd = productByRef.get(p.canonicalRef)
+      return {
+        id: p.sourceRowId,
+        productId: prd?.id ?? p.canonicalRef,
+        date: p.date!,
+        qty: p.qty!,
+        unitPrice: p.unitPrice ?? 0,
+        amount: p.computedAmount,
+      }
+    })
+  const allExitsForInv = parsed.exits
+    .filter((x) => !x.blocking && x.date)
+    .map((x) => {
+      const prd = productByRef.get(x.canonicalRef)
+      return {
+        id: x.sourceRowId,
+        productId: prd?.id ?? x.canonicalRef,
+        date: x.date!,
+        qtyConsumed: x.qtyConsumed,
+        qtyWasted: x.qtyWasted,
+      }
+    })
+
   for (const [sessionDate, rows] of invByDate.entries()) {
     const validLines: Array<{
       product: string
@@ -1818,12 +2111,35 @@ export async function executeWorkbookImport(
         statsMap.Inventaire.rowsSkipped++
         continue
       }
+      const rawAvg = computeRawWeightedAveragePrice(
+        product.id,
+        allEntriesForInv
+      )
+      const prodEntriesTotal = allEntriesForInv
+        .filter((e) => e.productId === product.id)
+        .reduce((acc, e) => acc + e.qty, 0)
+      const prodConsumedTotal = allExitsForInv
+        .filter((x) => x.productId === product.id)
+        .reduce((acc, x) => acc + x.qtyConsumed, 0)
+      const prodWastedTotal = allExitsForInv
+        .filter((x) => x.productId === product.id)
+        .reduce((acc, x) => acc + x.qtyWasted, 0)
+
+      const calc = computeInventoryExcelTheoretical({
+        initialStock: product.initial_stock,
+        totalEntries: prodEntriesTotal,
+        totalConsumed: prodConsumedTotal,
+        totalWasted: prodWastedTotal,
+        counted: r.counted,
+        rawAveragePrice: rawAvg,
+      })
+
       validLines.push({
         product: product.id,
-        theoretical: 0,
+        theoretical: calc.theoretical,
         counted: r.counted,
-        diff: 0,
-        value_diff: null,
+        diff: calc.diff,
+        value_diff: calc.valueDiff,
         source_row_id: r.sourceRowId,
         order_index: r.orderIndex,
       })
@@ -1850,6 +2166,7 @@ export async function executeWorkbookImport(
     statsMap['Sorties Stock'],
     statsMap.Inventaire,
     statsMap.Parametres,
+    ...(parsed.aVerifierRows.length > 0 ? [statsMap['À vérifier']] : []),
   ]
 
   const totalRowsRead = sheetStats.reduce((s, x) => s + x.rowsRead, 0)
@@ -1974,7 +2291,10 @@ export async function executeWorkbookImport(
 
   if (dryRun) {
     for (const p of parsed.purchases) {
-      if (!p.blocking && p.paymentStatus === 'unpaid') {
+      const effectivePay = p.isAmbiguousPayment
+        ? resolvedAmbiguousPaymentStatus
+        : p.paymentStatus
+      if (!p.blocking && effectivePay === 'unpaid') {
         unpaidInvoicesCount++
         unpaidInvoicesAmount = round2(unpaidInvoicesAmount + p.computedAmount)
       }
@@ -2031,6 +2351,8 @@ export async function executeWorkbookImport(
     unpaidInvoicesAmount,
     stockStatusCounts,
     first20FlaggedRows: parsed.issues.slice(0, 20),
+    autoBackupLocation,
+    autoBackupCreatedAt,
   }
 }
 
@@ -2355,6 +2677,8 @@ export type DataQualityCategory =
   | 'categorie_incoherente'
   | 'sans_stock_min'
   | 'prix_manquant'
+  | 'paiement_ambigu'
+  | 'fournisseur_manquant'
   | 'doublon_potentiel'
   | 'fournisseur_incomplet'
   | 'a_verifier'
@@ -2369,6 +2693,9 @@ export interface DataQualityItem {
   detail: string
   fixRoute: string
   fixActionLabel: string
+  recordId?: string
+  secondaryId?: string
+  currentValue?: string | number | null
 }
 
 export interface DatabaseQualityReport {
@@ -2378,6 +2705,8 @@ export interface DatabaseQualityReport {
     categorie_incoherente: number
     sans_stock_min: number
     prix_manquant: number
+    paiement_ambigu: number
+    fournisseur_manquant: number
     doublon_potentiel: number
     fournisseur_incomplet: number
     a_verifier: number
@@ -2389,32 +2718,26 @@ export interface DatabaseQualityReport {
 export async function computeDatabaseQualityReport(
   repo: DataRepository
 ): Promise<DatabaseQualityReport> {
-  const [products, suppliers, pur, ext, inv] = await Promise.all([
+  const [products, suppliers, pur, ext] = await Promise.all([
     repo.listProducts(),
     repo.listSuppliers(),
     repo.listPurchases(),
     repo.listExits(),
-    repo.listInventories(),
   ])
-
-  const stockMap = computeAllProductsStock({
-    products,
-    purchases: pur.headers,
-    purchaseLines: pur.lines,
-    exits: ext.headers,
-    exitLines: ext.lines,
-    inventorySessions: inv.sessions,
-    inventoryLines: inv.lines,
-  })
 
   const items: DataQualityItem[] = []
   const activeProducts = products.filter((p) => !p.archived)
 
-  // 1. Products without category
+  // 1. Products without category (or category === '0' / 'Sans catégorie')
   for (const p of activeProducts) {
     const cat = (p.category ?? '').trim()
     const lowerCat = cat.toLowerCase()
-    if (!cat || lowerCat === 'sans catégorie' || lowerCat === 'non classé') {
+    if (
+      !cat ||
+      cat === '0' ||
+      lowerCat === 'sans catégorie' ||
+      lowerCat === 'non classé'
+    ) {
       items.push({
         id: `qc-cat-${p.id}`,
         category: 'sans_categorie',
@@ -2422,9 +2745,11 @@ export async function computeDatabaseQualityReport(
         collection: 'Produits',
         reference: p.ref,
         label: p.name,
-        detail: 'Catégorie vide ou « Sans catégorie »',
-        fixRoute: '/produits',
+        detail: `Catégorie actuelle : « ${cat || 'Vide'} »`,
+        fixRoute: '/a-corriger',
         fixActionLabel: 'Affecter une catégorie',
+        recordId: p.id,
+        currentValue: cat,
       })
     }
   }
@@ -2433,7 +2758,7 @@ export async function computeDatabaseQualityReport(
   const byNormCat = new Map<string, Set<string>>()
   for (const p of activeProducts) {
     const raw = (p.category ?? '').trim()
-    if (!raw) continue
+    if (!raw || raw === '0') continue
     const norm = raw
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
@@ -2470,26 +2795,10 @@ export async function computeDatabaseQualityReport(
         reference: p.ref,
         label: p.name,
         detail: `Unité : ${p.unit} — Aucun seuil minimum configuré`,
-        fixRoute: '/reapprovisionnement',
+        fixRoute: '/a-corriger',
         fixActionLabel: 'Définir le seuil min.',
-      })
-    }
-  }
-
-  // 4. Products with missing price ("Prix manquant") or purchase lines with 0 price
-  for (const p of activeProducts) {
-    const st = stockMap.get(p.id)
-    if (st?.priceMissing) {
-      items.push({
-        id: `qc-prc-prod-${p.id}`,
-        category: 'prix_manquant',
-        categoryLabel: 'Prix moyen manquant',
-        collection: 'Produits',
-        reference: p.ref,
-        label: p.name,
-        detail: `Stock actuel : ${st.stock} ${p.unit} — Aucun achat valorisé (> 0 DH)`,
-        fixRoute: '/entrees-de-stock',
-        fixActionLabel: 'Saisir un prix d’achat',
+        recordId: p.id,
+        currentValue: p.min_stock,
       })
     }
   }
@@ -2498,61 +2807,105 @@ export async function computeDatabaseQualityReport(
   const prdMap = new Map(products.map((p) => [p.id, p]))
   const supMap = new Map(suppliers.map((s) => [s.id, s]))
 
+  // 4. Purchases without price (purchase lines with unit_price <= 0)
+  let unpricedLinesFound = 0
   for (const line of pur.lines) {
     const h = purHeaderMap.get(line.purchase)
     if (!h || h.reversed_of || h.correction_status === 'reversed') continue
     if (!line.unit_price || line.unit_price <= 0) {
+      unpricedLinesFound++
       const p = prdMap.get(line.product)
       items.push({
         id: `qc-prc-line-${line.id}`,
         category: 'prix_manquant',
         categoryLabel: 'Achat sans prix unitaire',
         collection: 'Entrées Stock',
-        reference: h.invoice_no || h.date.slice(0, 10),
+        reference: p?.ref || h.invoice_no || h.date.slice(0, 10),
         label: p ? `${p.ref} — ${p.name}` : line.product,
-        detail: `Entrée du ${h.date.slice(0, 10)} (Qté : ${line.qty}) à 0,00 DH`,
-        fixRoute: '/entrees-de-stock',
-        fixActionLabel: 'Corriger le bon d’entrée',
+        detail: `Entrée du ${h.date.slice(0, 10)} (Qté : ${line.qty} ${p?.unit ?? ''}) à 0,00 DH`,
+        fixRoute: '/a-corriger',
+        fixActionLabel: 'Saisir le prix unitaire',
+        recordId: line.id,
+        secondaryId: h.id,
+        currentValue: line.unit_price,
       })
     }
   }
-
-  // 5. Duplicate-looking lines (same date, product, qty in active purchases or exits)
-  const purSigCount = new Map<string, { count: number; line: (typeof pur.lines)[0]; header: (typeof pur.headers)[0] }>()
-  for (const line of pur.lines) {
-    const h = purHeaderMap.get(line.purchase)
-    if (!h || h.reversed_of || h.correction_status === 'reversed') continue
-    const sig = `${h.date.slice(0, 10)}|${line.product}|${line.qty}|${h.supplier}`
-    const prev = purSigCount.get(sig)
-    if (prev) {
-      prev.count++
-    } else {
-      purSigCount.set(sig, { count: 1, line, header: h })
+  if (unpricedLinesFound === 0) {
+    const pricedProductIds = new Set(
+      pur.lines
+        .filter((l) => {
+          const h = purHeaderMap.get(l.purchase)
+          return (
+            h &&
+            !h.reversed_of &&
+            h.correction_status !== 'reversed' &&
+            l.unit_price > 0
+          )
+        })
+        .map((l) => l.product)
+    )
+    for (const p of activeProducts) {
+      if (!pricedProductIds.has(p.id)) {
+        items.push({
+          id: `qc-prc-prd-${p.id}`,
+          category: 'prix_manquant',
+          categoryLabel: 'Produit sans prix d’achat',
+          collection: 'Produits',
+          reference: p.ref,
+          label: `${p.ref} — ${p.name}`,
+          detail: 'Aucun achat valorisé enregistré pour ce produit',
+          fixRoute: '/entrees-de-stock',
+          fixActionLabel: 'Enregistrer une entrée valorisée',
+          recordId: p.id,
+        })
+      }
     }
   }
-  for (const [sig, entry] of purSigCount.entries()) {
-    if (entry.count > 1) {
-      const p = prdMap.get(entry.line.product)
+
+  // 5. Payments not OUI/NON (is_ambiguous_payment === true)
+  for (const h of pur.headers) {
+    if (h.reversed_of || h.correction_status === 'reversed') continue
+    if (h.is_ambiguous_payment) {
+      const supName = supMap.get(h.supplier)?.name || h.supplier
+      const firstLine = pur.lines.find((l) => l.purchase === h.id)
+      const p = firstLine ? prdMap.get(firstLine.product) : undefined
       items.push({
-        id: `qc-dup-pur-${sig}`,
-        category: 'doublon_potentiel',
-        categoryLabel: 'Doublon potentiel (Entrée)',
+        id: `qc-pay-${h.id}`,
+        category: 'paiement_ambigu',
+        categoryLabel: 'Paiement ni OUI ni NON',
         collection: 'Entrées Stock',
-        reference: entry.header.date.slice(0, 10),
-        label: p ? `${p.ref} — ${p.name}` : entry.line.product,
-        detail: `${entry.count} lignes identiques le ${entry.header.date.slice(0, 10)} (Qté : ${entry.line.qty})`,
-        fixRoute: '/entrees-de-stock',
-        fixActionLabel: 'Vérifier / Contre-passer',
+        reference: p?.ref || h.invoice_no || h.date.slice(0, 10),
+        label: p ? `${p.ref} — ${p.name} (${supName})` : supName,
+        detail: `Valeur brute Excel : « ${h.raw_payment_status || 'Vide'} » — Statut actuel : ${h.payment_status === 'paid' ? 'Payé' : 'Impayé'}`,
+        fixRoute: '/a-corriger',
+        fixActionLabel: 'Confirmer Payé / Impayé',
+        recordId: h.id,
+        currentValue: h.payment_status,
       })
     }
   }
 
-  // 6. Suppliers with missing contact/phone or unmatched supplier references
+  // 6. Suppliers missing from the supplier sheet (missing_from_supplier_sheet === true or unmatched supplier on purchase)
   for (const s of suppliers) {
     if (s.archived) continue
-    if (!s.phone.trim() && !s.contact.trim()) {
+    if (s.missing_from_supplier_sheet) {
       items.push({
-        id: `qc-sup-${s.id}`,
+        id: `qc-sup-missing-${s.id}`,
+        category: 'fournisseur_manquant',
+        categoryLabel: 'Fournisseur absent de la feuille fournisseur',
+        collection: 'Fournisseurs',
+        reference: s.name,
+        label: s.name,
+        detail: 'Utilisé dans Entrées Stock mais absent de la feuille « fournisseur » lors de l’import',
+        fixRoute: '/a-corriger',
+        fixActionLabel: 'Valider / Compléter la fiche',
+        recordId: s.id,
+        currentValue: s.phone,
+      })
+    } else if (!s.phone.trim() && !s.contact.trim()) {
+      items.push({
+        id: `qc-sup-inc-${s.id}`,
         category: 'fournisseur_incomplet',
         categoryLabel: 'Fournisseur incomplet',
         collection: 'Fournisseurs',
@@ -2561,6 +2914,7 @@ export async function computeDatabaseQualityReport(
         detail: 'Téléphone et nom du contact non renseignés',
         fixRoute: '/fournisseurs',
         fixActionLabel: 'Compléter la fiche',
+        recordId: s.id,
       })
     }
   }
@@ -2570,21 +2924,70 @@ export async function computeDatabaseQualityReport(
     if (!supMap.has(h.supplier)) {
       items.push({
         id: `qc-sup-unmatched-${h.id}`,
-        category: 'fournisseur_incomplet',
-        categoryLabel: 'Fournisseur non rattaché',
+        category: 'fournisseur_manquant',
+        categoryLabel: 'Fournisseur absent de la feuille fournisseur',
         collection: 'Entrées Stock',
         reference: h.invoice_no || h.date.slice(0, 10),
         label: h.supplier || 'Inconnu',
-        detail: `Bon d’entrée du ${h.date.slice(0, 10)} rattaché à un fournisseur non trouvé`,
-        fixRoute: '/fournisseurs',
+        detail: `Bon d’entrée du ${h.date.slice(0, 10)} rattaché à un fournisseur hors liste`,
+        fixRoute: '/a-corriger',
         fixActionLabel: 'Rattacher au fournisseur',
+        recordId: h.id,
       })
     }
   }
 
-  // 7. Rows noted "à vérifier" in products, purchases, exits, or suppliers
+  // 7. Possible duplicates (lines flagged is_duplicate_candidate && !duplicate_verified, or identical signature)
+  const seenDupLineIds = new Set<string>()
+  for (const line of pur.lines) {
+    const h = purHeaderMap.get(line.purchase)
+    if (!h || h.reversed_of || h.correction_status === 'reversed') continue
+    if (line.is_duplicate_candidate && !line.duplicate_verified) {
+      seenDupLineIds.add(line.id)
+      const p = prdMap.get(line.product)
+      items.push({
+        id: `qc-dup-pur-line-${line.id}`,
+        category: 'doublon_potentiel',
+        categoryLabel: 'Doublon potentiel (Entrée)',
+        collection: 'Entrées Stock',
+        reference: p?.ref || h.date.slice(0, 10),
+        label: p ? `${p.ref} — ${p.name}` : line.product,
+        detail: `Même date (${h.date.slice(0, 10)}), même produit et même quantité (${line.qty})`,
+        fixRoute: '/a-corriger',
+        fixActionLabel: 'Conserver ou Contre-passer',
+        recordId: h.id,
+        secondaryId: line.id,
+      })
+    }
+  }
+
+  const extHeaderMap = new Map(ext.headers.map((h) => [h.id, h]))
+  for (const line of ext.lines) {
+    const h = extHeaderMap.get(line.exit)
+    if (!h || h.reversed_of || h.correction_status === 'reversed') continue
+    if (line.is_duplicate_candidate && !line.duplicate_verified) {
+      seenDupLineIds.add(line.id)
+      const p = prdMap.get(line.product)
+      items.push({
+        id: `qc-dup-ext-line-${line.id}`,
+        category: 'doublon_potentiel',
+        categoryLabel: 'Doublon potentiel (Sortie)',
+        collection: 'Sorties Stock',
+        reference: p?.ref || h.date.slice(0, 10),
+        label: p ? `${p.ref} — ${p.name}` : line.product,
+        detail: `Même date (${h.date.slice(0, 10)}), même produit et même quantité sortie (${line.qty_consumed})`,
+        fixRoute: '/a-corriger',
+        fixActionLabel: 'Conserver ou Contre-passer',
+        recordId: h.id,
+        secondaryId: line.id,
+      })
+    }
+  }
+
+  // 8. Rows noted "à vérifier" in products, purchases, exits, or suppliers
   for (const p of activeProducts) {
-    if ((p.notes ?? '').toLowerCase().includes('vérifier') || (p.notes ?? '').toLowerCase().includes('verifier')) {
+    const n = (p.notes ?? '').toLowerCase()
+    if (n.includes('vérifier') || n.includes('verifier')) {
       items.push({
         id: `qc-ver-prd-${p.id}`,
         category: 'a_verifier',
@@ -2593,45 +2996,60 @@ export async function computeDatabaseQualityReport(
         reference: p.ref,
         label: p.name,
         detail: p.notes || 'Signalé à vérifier lors de l’import',
-        fixRoute: '/produits',
-        fixActionLabel: 'Vérifier la fiche',
+        fixRoute: '/a-corriger',
+        fixActionLabel: 'Marquer comme vérifié',
+        recordId: p.id,
+        secondaryId: 'product',
       })
     }
   }
   for (const h of pur.headers) {
     if (h.reversed_of || h.correction_status === 'reversed') continue
-    if ((h.notes ?? '').toLowerCase().includes('vérifier') || (h.notes ?? '').toLowerCase().includes('verifier')) {
+    const n = (h.notes ?? '').toLowerCase()
+    if (n.includes('vérifier') || n.includes('verifier')) {
+      const firstLine = pur.lines.find((l) => l.purchase === h.id)
+      const p = firstLine ? prdMap.get(firstLine.product) : undefined
       items.push({
         id: `qc-ver-pur-${h.id}`,
         category: 'a_verifier',
         categoryLabel: 'Mention « À vérifier »',
         collection: 'Entrées Stock',
-        reference: h.invoice_no || h.date.slice(0, 10),
-        label: supMap.get(h.supplier)?.name || h.supplier,
+        reference: p?.ref || h.invoice_no || h.date.slice(0, 10),
+        label: p
+          ? `${p.ref} — ${p.name}`
+          : supMap.get(h.supplier)?.name || h.supplier,
         detail: h.notes,
-        fixRoute: '/entrees-de-stock',
-        fixActionLabel: 'Vérifier le bon',
+        fixRoute: '/a-corriger',
+        fixActionLabel: 'Marquer comme vérifié',
+        recordId: h.id,
+        secondaryId: 'purchase',
       })
     }
   }
   for (const h of ext.headers) {
     if (h.reversed_of || h.correction_status === 'reversed') continue
-    if ((h.notes ?? '').toLowerCase().includes('vérifier') || (h.notes ?? '').toLowerCase().includes('verifier')) {
+    const n = (h.notes ?? '').toLowerCase()
+    if (n.includes('vérifier') || n.includes('verifier')) {
+      const firstLine = ext.lines.find((l) => l.exit === h.id)
+      const p = firstLine ? prdMap.get(firstLine.product) : undefined
       items.push({
         id: `qc-ver-ext-${h.id}`,
         category: 'a_verifier',
         categoryLabel: 'Mention « À vérifier »',
         collection: 'Sorties Stock',
-        reference: h.date.slice(0, 10),
-        label: h.destination,
+        reference: p?.ref || h.date.slice(0, 10),
+        label: p ? `${p.ref} — ${p.name}` : h.destination,
         detail: h.notes,
-        fixRoute: '/sorties-de-stock',
-        fixActionLabel: 'Vérifier la sortie',
+        fixRoute: '/a-corriger',
+        fixActionLabel: 'Marquer comme vérifié',
+        recordId: h.id,
+        secondaryId: 'exit',
       })
     }
   }
   for (const s of suppliers.filter((sup) => !sup.archived)) {
-    if ((s.notes ?? '').toLowerCase().includes('vérifier') || (s.notes ?? '').toLowerCase().includes('verifier')) {
+    const n = (s.notes ?? '').toLowerCase()
+    if (n.includes('vérifier') || n.includes('verifier')) {
       items.push({
         id: `qc-ver-sup-${s.id}`,
         category: 'a_verifier',
@@ -2640,19 +3058,31 @@ export async function computeDatabaseQualityReport(
         reference: s.name,
         label: s.name,
         detail: s.notes,
-        fixRoute: '/fournisseurs',
-        fixActionLabel: 'Vérifier le fournisseur',
+        fixRoute: '/a-corriger',
+        fixActionLabel: 'Marquer comme vérifié',
+        recordId: s.id,
+        secondaryId: 'supplier',
       })
     }
   }
 
   const counts = {
     sans_categorie: items.filter((i) => i.category === 'sans_categorie').length,
-    categorie_incoherente: items.filter((i) => i.category === 'categorie_incoherente').length,
+    categorie_incoherente: items.filter(
+      (i) => i.category === 'categorie_incoherente'
+    ).length,
     sans_stock_min: items.filter((i) => i.category === 'sans_stock_min').length,
     prix_manquant: items.filter((i) => i.category === 'prix_manquant').length,
-    doublon_potentiel: items.filter((i) => i.category === 'doublon_potentiel').length,
-    fournisseur_incomplet: items.filter((i) => i.category === 'fournisseur_incomplet').length,
+    paiement_ambigu: items.filter((i) => i.category === 'paiement_ambigu')
+      .length,
+    fournisseur_manquant: items.filter(
+      (i) => i.category === 'fournisseur_manquant'
+    ).length,
+    doublon_potentiel: items.filter((i) => i.category === 'doublon_potentiel')
+      .length,
+    fournisseur_incomplet: items.filter(
+      (i) => i.category === 'fournisseur_incomplet'
+    ).length,
     a_verifier: items.filter((i) => i.category === 'a_verifier').length,
     total: items.length,
   }

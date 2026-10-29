@@ -66,6 +66,7 @@ export interface SupplierRecord {
   payment_terms: string
   notes: string
   archived?: boolean
+  missing_from_supplier_sheet?: boolean
   source_row_id?: string | null
   import_batch_id?: string | null
   created_at: string
@@ -140,6 +141,8 @@ export interface PurchaseRecord {
   payment_date: string | null
   payment_method?: string | null
   payment_reference?: string | null
+  raw_payment_status?: string | null
+  is_ambiguous_payment?: boolean
   amount_paid?: number | null
   payment_events?: PaymentEventRecord[]
   recorded_by: string
@@ -165,6 +168,8 @@ export interface PurchaseLineRecord {
   qty: number
   unit_price: number
   amount: number
+  is_duplicate_candidate?: boolean
+  duplicate_verified?: boolean
   source_row_id?: string | null
   import_batch_id?: string | null
   order_index?: number | null
@@ -200,6 +205,8 @@ export interface ExitLineRecord {
   qty_wasted: number
   loss_reason?: string | null
   unit_cost_snapshot: number | null
+  is_duplicate_candidate?: boolean
+  duplicate_verified?: boolean
   source_row_id?: string | null
   import_batch_id?: string | null
   order_index?: number | null
@@ -304,6 +311,9 @@ export interface CreatePurchaseDocumentInput {
   invoice_no: string
   payment_status: PaymentStatus
   payment_date?: string | null
+  raw_payment_status?: string | null
+  is_ambiguous_payment?: boolean
+  recorded_by_name?: string
   notes?: string
   import_batch_id?: string | null
   order_index?: number | null
@@ -311,6 +321,8 @@ export interface CreatePurchaseDocumentInput {
     product: string
     qty: number
     unit_price: number
+    is_duplicate_candidate?: boolean
+    duplicate_verified?: boolean
     source_row_id?: string | null
     order_index?: number | null
   }>
@@ -326,6 +338,7 @@ export interface ReversalOptions {
 export interface CreateExitDocumentInput {
   date: string
   destination: string
+  recorded_by_name?: string
   notes?: string
   negative_stock_reason?: string | null
   skipNegativeStockGuard?: boolean
@@ -336,6 +349,8 @@ export interface CreateExitDocumentInput {
     qty_consumed: number
     qty_wasted: number
     loss_reason?: string | null
+    is_duplicate_candidate?: boolean
+    duplicate_verified?: boolean
     source_row_id?: string | null
     order_index?: number | null
   }>
@@ -490,6 +505,26 @@ export interface DataRepository {
     header: PurchaseRecord
     lines: PurchaseLineRecord[]
   }>
+  updatePurchaseHeader(
+    purchaseId: string,
+    patch: Partial<
+      Pick<
+        PurchaseRecord,
+        | 'payment_status'
+        | 'payment_date'
+        | 'raw_payment_status'
+        | 'is_ambiguous_payment'
+        | 'notes'
+        | 'invoice_no'
+      >
+    >,
+    reason?: string
+  ): Promise<PurchaseRecord>
+  updatePurchaseLinePrice(
+    lineId: string,
+    unitPrice: number,
+    options?: { duplicate_verified?: boolean; reason?: string }
+  ): Promise<PurchaseLineRecord>
   markPurchasePaid(
     purchaseId: string,
     paymentDate: string,

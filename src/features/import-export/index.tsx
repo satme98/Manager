@@ -36,7 +36,9 @@ import {
   exportDataQualityReportFile,
   exportFullWorkbookMirror,
   parseAndValidateWorkbook,
+  restorePreImportBackup,
 } from '@/lib/excel-import-engine'
+import { buildMonarqCleanImportWorkbookBuffer } from '@/data/monarq-real-import-dataset'
 import { formatDateTimeFR, formatMAD } from '@/lib/format'
 import { canRunExcelImport } from '@/lib/rbac'
 import { useAuthStore } from '@/stores/auth-store'
@@ -112,6 +114,7 @@ export function ImportExport() {
   const [decisions, setDecisions] = useState<ImportUserDecisions>({
     vatConvention: 'TTC',
     vatConfirmed: true,
+    ambiguousPaymentDecision: 'unpaid',
     categoryMapping: {},
     supplierChoices: {},
     duplicateDecisions: {},
@@ -143,6 +146,25 @@ export function ImportExport() {
     queryFn: () => computeDatabaseQualityReport(repository),
   })
 
+  function applyParsedWorkbook(result: ParsedWorkbookResult) {
+    setParsedWorkbook(result)
+    setDecisions({
+      vatConvention: 'TTC',
+      vatConfirmed: true,
+      ambiguousPaymentDecision: 'unpaid',
+      categoryMapping: { ...result.defaultCategoryMapping },
+      supplierChoices: { ...result.defaultSupplierChoices },
+      duplicateDecisions: { ...result.defaultDuplicateDecisions },
+      updateExistingProducts: false,
+      updateExistingSuppliers: false,
+      fallbackInventoryDate:
+        result.distinctInventoryDates[0] ||
+        new Date().toISOString().slice(0, 10),
+    })
+    setReconciliationReport(null)
+    setPreviewPage(1)
+  }
+
   async function handleFileSelected(file: File) {
     if (!file.name.match(/\.(xlsx|xlsm)$/i)) {
       toast.error(
@@ -156,27 +178,41 @@ export function ImportExport() {
       // Yield to UI before parsing large sheets
       await new Promise((r) => setTimeout(r, 20))
       const result = parseAndValidateWorkbook(buffer, file.name, file.size)
-      setParsedWorkbook(result)
-      setDecisions({
-        vatConvention: 'TTC',
-        vatConfirmed: true,
-        categoryMapping: { ...result.defaultCategoryMapping },
-        supplierChoices: { ...result.defaultSupplierChoices },
-        duplicateDecisions: { ...result.defaultDuplicateDecisions },
-        updateExistingProducts: false,
-        updateExistingSuppliers: false,
-        fallbackInventoryDate:
-          result.distinctInventoryDates[0] ||
-          new Date().toISOString().slice(0, 10),
-      })
-      setReconciliationReport(null)
-      setPreviewPage(1)
+      applyParsedWorkbook(result)
       toast.success(`Fichier « ${file.name} » analysé avec succès.`)
     } catch (err) {
       toast.error(
         err instanceof Error
           ? err.message
           : 'Impossible de lire ce classeur Excel.'
+      )
+    } finally {
+      setParsingFile(false)
+    }
+  }
+
+  async function handleLoadBuiltInCleanWorkbook() {
+    setParsingFile(true)
+    try {
+      await new Promise((r) => setTimeout(r, 20))
+      const buffer = buildMonarqCleanImportWorkbookBuffer()
+      const fileName = 'MONARQ_ECONOMAT_import_propre.xlsx'
+      const result = parseAndValidateWorkbook(buffer, fileName, buffer.byteLength)
+      // Preserve raw categories by default on the clean workbook so nothing is renamed silently
+      const rawIdentityCategories: Record<string, string> = {}
+      for (const c of result.distinctProductCategories) {
+        rawIdentityCategories[c] = c
+      }
+      result.defaultCategoryMapping = rawIdentityCategories
+      applyParsedWorkbook(result)
+      toast.success(
+        'Classeur MONARQ_ECONOMAT_import_propre.xlsx chargé (345 produits, 247 achats, 143 sorties, 119 inventaires, 19 fournisseurs).'
+      )
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : 'Impossible de générer le classeur propre.'
       )
     } finally {
       setParsingFile(false)
@@ -489,20 +525,31 @@ export function ImportExport() {
                         ignorées : JOURNAL STOCK, Macro1, Dashboard, Etat Stock,
                         Guide.
                       </p>
-                      <Button
-                        type='button'
-                        size='sm'
-                        className='mt-4'
-                        disabled={parsingFile}
-                        onClick={() => fileInputRef.current?.click()}
-                      >
-                        {parsingFile ? (
-                          <Loader2 className='mr-1.5 h-4 w-4 animate-spin' />
-                        ) : (
-                          <Upload className='mr-1.5 h-4 w-4' />
-                        )}
-                        Choisir un fichier .xlsx / .xlsm
-                      </Button>
+                      <div className='mt-4 flex flex-wrap items-center justify-center gap-2'>
+                        <Button
+                          type='button'
+                          size='sm'
+                          disabled={parsingFile}
+                          onClick={() => fileInputRef.current?.click()}
+                        >
+                          {parsingFile ? (
+                            <Loader2 className='mr-1.5 h-4 w-4 animate-spin' />
+                          ) : (
+                            <Upload className='mr-1.5 h-4 w-4' />
+                          )}
+                          Choisir un fichier .xlsx / .xlsm
+                        </Button>
+                        <Button
+                          type='button'
+                          size='sm'
+                          variant='secondary'
+                          disabled={parsingFile}
+                          onClick={() => void handleLoadBuiltInCleanWorkbook()}
+                        >
+                          <FileSpreadsheet className='mr-1.5 h-4 w-4' />
+                          Charger MONARQ_ECONOMAT_import_propre.xlsx (345 réf.)
+                        </Button>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -670,6 +717,10 @@ export function ImportExport() {
                         [
                           'fournisseur',
                           parsedWorkbook.suppliers.length,
+                        ] as const,
+                        [
+                          'À vérifier',
+                          parsedWorkbook.aVerifierRows.length,
                         ] as const,
                       ]
                     ).map(([sheetKey, count]) => (
@@ -1149,17 +1200,42 @@ export function ImportExport() {
                     </div>
                   </div>
 
-                  {/* 2. Payment mapping */}
-                  <div className='rounded-md border border-border p-3 space-y-1'>
-                    <p className='font-semibold text-foreground'>
-                      2. Correspondance des statuts de paiement
-                    </p>
-                    <p className='text-muted-foreground'>
-                      <strong>OUI</strong> → « Payé » (`paid`) |{' '}
-                      <strong>NON / Vide</strong> → « Impayé » (`unpaid`). Les
-                      dates de paiement sont conservées lorsqu’elles sont
-                      présentes ; aucun numéro de facture fictif n’est généré.
-                    </p>
+                  {/* 2. Payment mapping & Ambiguous payment confirmation */}
+                  <div className='rounded-md border border-border p-3 space-y-2.5'>
+                    <div className='flex flex-wrap items-center justify-between gap-2'>
+                      <div>
+                        <p className='font-semibold text-foreground'>
+                          2. Correspondance des statuts de paiement (OUI / NON / Valeurs ambiguës)
+                        </p>
+                        <p className='text-muted-foreground'>
+                          <strong>OUI</strong> → « Payé » (`paid`) |{' '}
+                          <strong>NON</strong> → « Impayé » (`unpaid`). Pour les{' '}
+                          <strong>{parsedWorkbook.ambiguousPaymentCount}</strong>{' '}
+                          lignes dont la valeur n’est ni OUI ni NON (ex. EN ATTENTE, CRÉDIT, À VÉRIFIER), choisissez le statut à appliquer :
+                        </p>
+                      </div>
+                      <Select
+                        value={decisions.ambiguousPaymentDecision ?? 'unpaid'}
+                        onValueChange={(v) =>
+                          setDecisions((prev) => ({
+                            ...prev,
+                            ambiguousPaymentDecision: v as 'paid' | 'unpaid',
+                          }))
+                        }
+                      >
+                        <SelectTrigger className='h-8 w-64 text-xs'>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value='unpaid'>
+                            Traiter comme Impayé (NON) — Parité Excel (26 938,55 DH)
+                          </SelectItem>
+                          <SelectItem value='paid'>
+                            Traiter comme Payé (OUI)
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
 
                   {/* 3. Initial stock */}
@@ -1375,10 +1451,34 @@ export function ImportExport() {
                         <p className='text-xs text-muted-foreground'>
                           {reconciliationReport.verdictMessage}
                         </p>
+                        {reconciliationReport.autoBackupLocation && (
+                          <p className='mt-1 text-[11px] font-medium text-[#008060]'>
+                            Sauvegarde pré-import créée :{' '}
+                            <code className='rounded bg-white px-1 py-0.5 font-mono text-[10px]'>
+                              {reconciliationReport.autoBackupLocation}
+                            </code>
+                          </p>
+                        )}
                       </div>
                     </div>
 
-                    <div className='flex items-center gap-2'>
+                    <div className='flex flex-wrap items-center gap-2'>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        className='h-8 text-xs'
+                        onClick={() => void navigate({ to: '/controle-excel' as never })}
+                      >
+                        Contrôle vs Excel →
+                      </Button>
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        className='h-8 text-xs'
+                        onClick={() => void navigate({ to: '/a-corriger' as never })}
+                      >
+                        À corriger →
+                      </Button>
                       <Button
                         size='sm'
                         variant='outline'
@@ -1389,17 +1489,43 @@ export function ImportExport() {
                         Télécharger le rapport (CSV)
                       </Button>
                       {!reconciliationReport.dryRun && (
-                        <Button
-                          size='sm'
-                          variant='outline'
-                          className='h-8 text-xs text-[#D72C0D]'
-                          onClick={() =>
-                            setBatchToReverse(reconciliationReport.batchId)
-                          }
-                        >
-                          <RotateCcw className='mr-1.5 h-3.5 w-3.5' />
-                          Annuler l’import
-                        </Button>
+                        <>
+                          <Button
+                            size='sm'
+                            variant='outline'
+                            className='h-8 text-xs text-[#D72C0D]'
+                            onClick={() =>
+                              setBatchToReverse(reconciliationReport.batchId)
+                            }
+                          >
+                            <RotateCcw className='mr-1.5 h-3.5 w-3.5' />
+                            Annuler l’import (Extourne)
+                          </Button>
+                          <Button
+                            size='sm'
+                            variant='outline'
+                            className='h-8 text-xs'
+                            onClick={async () => {
+                              try {
+                                await restorePreImportBackup(repository)
+                                invalidateDashboardAnalyticsCache()
+                                await queryClient.invalidateQueries()
+                                await refetchBatches()
+                                toast.success(
+                                  'Sauvegarde pré-import restaurée avec succès.'
+                                )
+                              } catch (err) {
+                                toast.error(
+                                  err instanceof Error
+                                    ? err.message
+                                    : 'Erreur lors de la restauration.'
+                                )
+                              }
+                            }}
+                          >
+                            Restaurer sauvegarde pré-import
+                          </Button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -2167,6 +2293,75 @@ function PreviewSheetTable({
           page={page}
           totalPages={totalPages}
           totalRows={filtered.length}
+          onPageChange={onPageChange}
+        />
+      </div>
+    )
+  }
+
+  if (sheet === 'À vérifier') {
+    const filteredVer = parsed.aVerifierRows.filter(
+      (r) =>
+        !q ||
+        r.reference.toLowerCase().includes(q) ||
+        r.label.toLowerCase().includes(q) ||
+        r.category.toLowerCase().includes(q)
+    )
+    const totalPages = Math.max(
+      1,
+      Math.ceil(filteredVer.length / PREVIEW_PAGE_SIZE)
+    )
+    const slice = filteredVer.slice(
+      (page - 1) * PREVIEW_PAGE_SIZE,
+      page * PREVIEW_PAGE_SIZE
+    )
+    return (
+      <div>
+        <div className='border-b border-border bg-[#B98900]/10 px-4 py-2 text-xs text-[#B98900]'>
+          Note : La feuille « À vérifier » est une liste de contrôle. Elle est
+          affichée ici pour revue et n’est jamais importée comme mouvement de
+          stock.
+        </div>
+        <Table>
+          <TableHeader>
+            <TableRow className='bg-muted/40'>
+              <TableHead className='px-4'>Ligne</TableHead>
+              <TableHead>Catégorie anomalie</TableHead>
+              <TableHead>Feuille d’origine</TableHead>
+              <TableHead>Référence</TableHead>
+              <TableHead>Élément</TableHead>
+              <TableHead>Détail</TableHead>
+              <TableHead className='px-4'>Action suggérée</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {slice.map((r) => (
+              <TableRow key={`aver-${r.rowNumber}`}>
+                <TableCell className='px-4 tabular-nums text-xs text-muted-foreground'>
+                  #{r.rowNumber}
+                </TableCell>
+                <TableCell className='text-xs font-medium'>
+                  {r.category}
+                </TableCell>
+                <TableCell className='text-xs'>{r.sheetOrigin}</TableCell>
+                <TableCell className='font-mono text-xs font-semibold'>
+                  {r.reference}
+                </TableCell>
+                <TableCell className='text-xs'>{r.label}</TableCell>
+                <TableCell className='text-xs text-muted-foreground'>
+                  {r.detail}
+                </TableCell>
+                <TableCell className='px-4 text-xs'>
+                  {r.suggestedAction}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        <PaginationBar
+          page={page}
+          totalPages={totalPages}
+          totalRows={filteredVer.length}
           onPageChange={onPageChange}
         />
       </div>
