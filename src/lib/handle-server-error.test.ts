@@ -15,32 +15,42 @@ beforeEach(() => {
 })
 
 describe('handleServerError', () => {
-  it('shows a generic message when the error is not recognised', () => {
-    handleServerError(new Error('network'))
+  it('shows a generic French message when the error is an unknown object', () => {
+    handleServerError({ unknown: true })
 
-    expect(toastError).toHaveBeenCalledWith('Something went wrong!')
+    expect(toastError).toHaveBeenCalledWith(
+      'Une erreur inattendue est survenue.'
+    )
   })
 
-  it('maps a plain object with status 204 to the no-content message', () => {
+  it('extracts error.message when the error is a standard Error instance', () => {
+    handleServerError(new Error('Stock insuffisant pour ce produit.'))
+
+    expect(toastError).toHaveBeenCalledWith(
+      'Stock insuffisant pour ce produit.'
+    )
+  })
+
+  it('maps a plain object with status 204 to the French no-content message', () => {
     handleServerError({ status: 204 })
 
-    expect(toastError).toHaveBeenCalledWith('No content.')
+    expect(toastError).toHaveBeenCalledWith('Aucun contenu.')
   })
 
   it('prefers the API title when the error is an Axios error with response data', () => {
     const error = new AxiosError('Bad request')
     error.response = {
       status: 422,
-      data: { title: 'Validation failed' },
+      data: { title: 'Validation échouée' },
     } as AxiosError['response']
 
     handleServerError(error)
 
-    expect(toastError).toHaveBeenCalledWith('Validation failed')
+    expect(toastError).toHaveBeenCalledWith('Validation échouée')
   })
 
-  it('falls back to the generic message when Axios response has no data.title', () => {
-    const error = new AxiosError('Request failed')
+  it('falls back to the generic French message when Axios response has no data.title and empty message', () => {
+    const error = new AxiosError('')
     error.response = {
       status: 500,
       data: {},
@@ -48,38 +58,14 @@ describe('handleServerError', () => {
 
     handleServerError(error)
 
-    expect(toastError).toHaveBeenCalledWith('Something went wrong!')
+    expect(toastError).toHaveBeenCalledWith(
+      'Une erreur inattendue est survenue.'
+    )
   })
 
-  it('falls back to the generic message when Axios data.title is an empty string', () => {
-    const error = new AxiosError('Bad request')
-    error.response = {
-      status: 400,
-      data: { title: '' },
-    } as AxiosError['response']
-
-    handleServerError(error)
-
-    expect(toastError).toHaveBeenCalledWith('Something went wrong!')
-  })
-
-  it('logs the error to the console in development', () => {
+  it('does not log errors to the console', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
-    const err = new Error('logged')
-
-    handleServerError(err)
-
-    expect(log).toHaveBeenCalledTimes(1)
-    expect(log).toHaveBeenCalledWith(err)
-
-    log.mockRestore()
-  })
-
-  it('does not log the error to the console in production', () => {
-    vi.stubEnv('DEV', false)
-
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
-    const err = new Error('not logged')
+    const err = new Error('silent')
 
     handleServerError(err)
 
@@ -88,3 +74,4 @@ describe('handleServerError', () => {
     log.mockRestore()
   })
 })
+

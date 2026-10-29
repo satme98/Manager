@@ -66,12 +66,17 @@ export function ProfileDropdown() {
             <DropdownMenuSeparator />
             {canCreatePurchase && (
               <DropdownMenuItem
-                onClick={() =>
-                  navigate({
-                    to: '/entrees-de-stock',
-                    search: { mode: 'new' } as never,
-                  })
-                }
+                onClick={() => {
+                  void navigate({ to: '/entrees-de-stock' })
+                  setTimeout(() => {
+                    window.history.replaceState(
+                      null,
+                      '',
+                      '/entrees-de-stock?mode=new'
+                    )
+                    window.dispatchEvent(new Event('monarq:navigate'))
+                  }, 30)
+                }}
               >
                 <ArrowDownToLine className='mr-2 size-4 text-[#008060]' />
                 <span>Nouvelle entrée</span>
@@ -79,12 +84,17 @@ export function ProfileDropdown() {
             )}
             {canCreateExit && (
               <DropdownMenuItem
-                onClick={() =>
-                  navigate({
-                    to: '/sorties-de-stock',
-                    search: { mode: 'new' } as never,
-                  })
-                }
+                onClick={() => {
+                  void navigate({ to: '/sorties-de-stock' })
+                  setTimeout(() => {
+                    window.history.replaceState(
+                      null,
+                      '',
+                      '/sorties-de-stock?mode=new'
+                    )
+                    window.dispatchEvent(new Event('monarq:navigate'))
+                  }, 30)
+                }}
               >
                 <ArrowUpFromLine className='mr-2 size-4 text-[#B98900]' />
                 <span>Nouvelle sortie</span>

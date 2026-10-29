@@ -26,7 +26,10 @@ import {
   formatDateTimeFR,
   formatQuantity,
 } from '@/lib/formatters'
-import { canReverseOrApprove } from '@/lib/rbac'
+import {
+  canPerformCollectionAction,
+  canReverseOrApprove,
+} from '@/lib/rbac'
 import { useAuthStore } from '@/stores/auth-store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -83,8 +86,10 @@ export function HistoriqueMouvements() {
   const [auditDateTo, setAuditDateTo] = useState('')
 
   const { data: dataset, isLoading, refetch } = useQuery({
-    queryKey: ['historique-mouvements-dataset'],
+    queryKey: ['historique-mouvements-dataset', role],
     queryFn: async () => {
+      const canListUsers = canPerformCollectionAction(role, 'users', 'list')
+      const canListAudit = canPerformCollectionAction(role, 'audit_log', 'list')
       const [products, suppliers, pur, ext, inv, settings, users, auditLogs] =
         await Promise.all([
           repository.listProducts(),
@@ -93,8 +98,10 @@ export function HistoriqueMouvements() {
           repository.listExits(),
           repository.listInventories(),
           repository.listSettings(),
-          repository.listUsers(),
-          repository.listAuditLogs(),
+          canListUsers
+            ? repository.listUsers()
+            : repository.getCurrentUser().then((u) => (u ? [u] : [])),
+          canListAudit ? repository.listAuditLogs() : Promise.resolve([]),
         ])
       return {
         products,

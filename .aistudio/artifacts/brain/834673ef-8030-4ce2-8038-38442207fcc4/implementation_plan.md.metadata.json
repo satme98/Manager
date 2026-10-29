@@ -1,0 +1,6 @@
+{
+  "summary":  "Full codebase audit findings and remediation plan covering navigation and URL query parameter synchronization, RBAC data-fetching guards for PocketBase and memory adapters, stock engine and Excel import/export consistency, and French localization cleanup.",
+  "updatedAt":  "2026-10-29T13:16:34.849997517Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

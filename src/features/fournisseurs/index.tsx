@@ -20,6 +20,7 @@ import {
 import { toast } from 'sonner'
 import * as XLSX from 'xlsx'
 import { repository } from '@/data'
+import { invalidateDashboardAnalyticsCache } from '@/data/analytics'
 import type { SupplierRecord, VatConvention } from '@/data/types'
 import { formatDateFR, formatMAD } from '@/lib/format'
 import { canPerformCollectionAction } from '@/lib/rbac'
@@ -428,8 +429,10 @@ export function FournisseursPage() {
       }
     },
     onSuccess: (saved) => {
+      invalidateDashboardAnalyticsCache()
       void queryClient.invalidateQueries({ queryKey: ['suppliers'] })
       void queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
       setDrawerOpen(false)
       toast.success(
         editingSupplier
@@ -460,9 +463,11 @@ export function FournisseursPage() {
       if (selectedSupplierId === mergeSourceId) {
         setSelectedSupplierId(mergeTargetId)
       }
+      invalidateDashboardAnalyticsCache()
       void queryClient.invalidateQueries({ queryKey: ['suppliers'] })
       void queryClient.invalidateQueries({ queryKey: ['purchases'] })
       void queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
       toast.success(
         `Fusion effectuée : ${movedPurchasesCount} bon(s) d’achat transféré(s) de « ${srcName} » vers « ${tgtName} ».`
       )

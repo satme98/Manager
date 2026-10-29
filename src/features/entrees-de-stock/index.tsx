@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { repository } from '@/data'
+import { invalidateDashboardAnalyticsCache } from '@/data/analytics'
 import type {
   AuditLogRecord,
   ProductRecord,
@@ -198,21 +199,6 @@ export function EntreesDeStock() {
     return new URLSearchParams(window.location.search).get('doc')
   })
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const checkParams = () => {
-      const params = new URLSearchParams(window.location.search)
-      if (params.get('mode') === 'new') {
-        setViewMode('new')
-      } else if (params.get('doc')) {
-        setSelectedDocId(params.get('doc'))
-        setViewMode('detail')
-      }
-    }
-    window.addEventListener('popstate', checkParams)
-    return () => window.removeEventListener('popstate', checkParams)
-  }, [])
-
   // List filters (initialized from URL query parameters when navigated from Dashboard)
   const [searchQuery, setSearchQuery] = useState('')
   const [dateFrom, setDateFrom] = useState(() => {
@@ -245,6 +231,41 @@ export function EntreesDeStock() {
     }
     return 'all'
   })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const checkParams = () => {
+      const params = new URLSearchParams(window.location.search)
+      if (params.get('mode') === 'new') {
+        setViewMode('new')
+      } else if (params.get('doc')) {
+        setSelectedDocId(params.get('doc'))
+        setViewMode('detail')
+      }
+      const from = params.get('from')
+      if (from !== null) setDateFrom(from)
+      const to = params.get('to')
+      if (to !== null) setDateTo(to)
+      const sup = params.get('supplier')
+      if (sup) setSupplierFilter(sup)
+      const p = params.get('paymentStatus')
+      if (p === 'paid' || p === 'unpaid') setPaymentFilter(p)
+      const c = params.get('correction')
+      if (
+        c === 'pending_approval' ||
+        c === 'reversed_only' ||
+        c === 'active_only'
+      ) {
+        setCorrectionFilter(c)
+      }
+    }
+    window.addEventListener('popstate', checkParams)
+    window.addEventListener('monarq:navigate', checkParams)
+    return () => {
+      window.removeEventListener('popstate', checkParams)
+      window.removeEventListener('monarq:navigate', checkParams)
+    }
+  }, [])
   const [sortField, setSortField] = useState<SortField>('date')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [pageSize, setPageSize] = useState<number>(25)
@@ -782,7 +803,9 @@ export function EntreesDeStock() {
       })
     },
     onSuccess: (created) => {
+      invalidateDashboardAnalyticsCache()
       queryClient.invalidateQueries({ queryKey: ['suppliers'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
       setDraft((prev) => ({ ...prev, supplierId: created.id }))
       setNewSupplierDialogOpen(false)
       setNewSupplierName('')
@@ -837,9 +860,12 @@ export function EntreesDeStock() {
       })
     },
     onSuccess: (created) => {
+      invalidateDashboardAnalyticsCache()
       queryClient.invalidateQueries({ queryKey: ['purchases'] })
       queryClient.invalidateQueries({ queryKey: ['products'] })
       queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['factures-paiements-dataset'] })
       const fresh = createFreshDraft()
       setDraft(fresh)
       setSubmittedAttempt(false)
@@ -888,8 +914,11 @@ export function EntreesDeStock() {
       return repository.markPurchasePaid(purchaseId, paymentDate)
     },
     onSuccess: () => {
+      invalidateDashboardAnalyticsCache()
       queryClient.invalidateQueries({ queryKey: ['purchases'] })
       queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['factures-paiements-dataset'] })
       setMarkPaidDialogOpen(false)
       toast.success('Statut de paiement mis à jour : Payé.')
     },
@@ -921,8 +950,12 @@ export function EntreesDeStock() {
       return { reversalResult, original, mode }
     },
     onSuccess: ({ reversalResult, original, mode }) => {
+      invalidateDashboardAnalyticsCache()
       queryClient.invalidateQueries({ queryKey: ['purchases'] })
+      queryClient.invalidateQueries({ queryKey: ['products'] })
       queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['factures-paiements-dataset'] })
       setReversalDialogOpen(false)
       setReversalReason('')
       setApproveCutoffOverride(false)

@@ -42,6 +42,7 @@ import {
   formatDateTimeFR,
   formatQuantity,
 } from '@/lib/formatters'
+import { canPerformCollectionAction } from '@/lib/rbac'
 import { roundCurrency, roundQty } from '@/lib/stock-engine'
 import { useAuthStore } from '@/stores/auth-store'
 import { Badge } from '@/components/ui/badge'
@@ -185,8 +186,9 @@ export function Rapports() {
   const [granularity, setGranularity] = useState<ChartGranularity>('month')
 
   const { data: dataset, isLoading } = useQuery({
-    queryKey: ['rapports-dataset'],
+    queryKey: ['rapports-dataset', role],
     queryFn: async () => {
+      const canListUsers = canPerformCollectionAction(role, 'users', 'list')
       const [
         products,
         suppliers,
@@ -202,7 +204,9 @@ export function Rapports() {
         repository.listExits(),
         repository.listInventories(),
         repository.listSettings(),
-        repository.listUsers(),
+        canListUsers
+          ? repository.listUsers()
+          : repository.getCurrentUser().then((u) => (u ? [u] : [])),
       ])
       return {
         products,

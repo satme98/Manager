@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { repository } from '@/data'
+import { invalidateDashboardAnalyticsCache } from '@/data/analytics'
 import type { VatConvention } from '@/data/types'
 import { triggerManualBackupDownload } from '@/lib/backup-export'
 import { useNavigate } from '@tanstack/react-router'
@@ -220,6 +221,7 @@ export function ImportExport() {
       setCurrentStep(6)
 
       if (!dryRun) {
+        invalidateDashboardAnalyticsCache()
         await queryClient.invalidateQueries()
         await refetchBatches()
         toast.success('Importation Excel terminée', {
@@ -266,6 +268,7 @@ export function ImportExport() {
         batchToReverse,
         'Annulation complète du lot via l’assistant Import / Export'
       )
+      invalidateDashboardAnalyticsCache()
       await queryClient.invalidateQueries()
       await refetchBatches()
       toast.success(

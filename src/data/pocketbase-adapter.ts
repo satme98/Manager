@@ -102,12 +102,20 @@ export class PocketBaseDataRepository implements DataRepository {
   }
 
   async listUsers(): Promise<UserRecord[]> {
-    const records = await this.pb.collection('users').getFullList({
-      sort: '-created',
-    })
-    return records.map((r) =>
-      this.mapUserRecord(r as unknown as Record<string, unknown>)
-    )
+    const actor = await this.getCurrentUser()
+    if (actor && actor.role !== 'admin') {
+      return [actor]
+    }
+    try {
+      const records = await this.pb.collection('users').getFullList({
+        sort: '-created',
+      })
+      return records.map((r) =>
+        this.mapUserRecord(r as unknown as Record<string, unknown>)
+      )
+    } catch {
+      return actor ? [actor] : []
+    }
   }
 
   async createUser(input: CreateUserInput): Promise<UserRecord> {
@@ -872,9 +880,22 @@ export class PocketBaseDataRepository implements DataRepository {
   }
 
   async listAuditLogs(): Promise<AuditLogRecord[]> {
-    return await this.pb.collection('audit_log').getFullList<AuditLogRecord>({
-      sort: '-timestamp',
-    })
+    const actor = await this.getCurrentUser()
+    if (
+      actor &&
+      actor.role !== 'admin' &&
+      actor.role !== 'manager' &&
+      actor.role !== 'consultation'
+    ) {
+      return []
+    }
+    try {
+      return await this.pb.collection('audit_log').getFullList<AuditLogRecord>({
+        sort: '-timestamp',
+      })
+    } catch {
+      return []
+    }
   }
 
   async listSettings(): Promise<SettingRecord[]> {
@@ -937,7 +958,9 @@ export class PocketBaseDataRepository implements DataRepository {
       settings,
     ] = await Promise.all([
       this.listProducts(),
-      this.listSuppliers(),
+      effectiveRole === 'cuisine'
+        ? Promise.resolve([])
+        : this.listSuppliers(),
       effectiveRole === 'cuisine'
         ? Promise.resolve({ headers: [], lines: [] })
         : this.listPurchases(),
@@ -1025,5 +1048,50 @@ export class PocketBaseDataRepository implements DataRepository {
     for (const s of payload.collections.settings ?? []) {
       await this.upsertSetting(s.key, s.value)
     }
+
+    const upsertRecord = async (
+      collectionName: string,
+      record: { id: string } & Record<string, unknown>
+    ) => {
+      try {
+        await this.pb.collection(collectionName).update(record.id, record)
+      } catch {
+        try {
+          await this.pb.collection(collectionName).create(record)
+        } catch {
+          // Ignore individual conflict on restore
+        }
+      }
+    }
+
+    for (const p of payload.collections.products ?? []) {
+      await upsertRecord('products', p as unknown as { id: string } & Record<string, unknown>)
+    }
+    for (const sup of payload.collections.suppliers ?? []) {
+      await upsertRecord('suppliers', sup as unknown as { id: string } & Record<string, unknown>)
+    }
+    for (const pur of payload.collections.purchases ?? []) {
+      await upsertRecord('purchases', pur as unknown as { id: string } & Record<string, unknown>)
+    }
+    for (const pl of payload.collections.purchase_lines ?? []) {
+      await upsertRecord('purchase_lines', pl as unknown as { id: string } & Record<string, unknown>)
+    }
+    for (const ex of payload.collections.exits ?? []) {
+      await upsertRecord('exits', ex as unknown as { id: string } & Record<string, unknown>)
+    }
+    for (const xl of payload.collections.exit_lines ?? []) {
+      await upsertRecord('exit_lines', xl as unknown as { id: string } & Record<string, unknown>)
+    }
+    for (const sess of payload.collections.inventory_sessions ?? []) {
+      await upsertRecord('inventory_sessions', sess as unknown as { id: string } & Record<string, unknown>)
+    }
+    for (const il of payload.collections.inventory_lines ?? []) {
+      await upsertRecord('inventory_lines', il as unknown as { id: string } & Record<string, unknown>)
+    }
+    for (const ib of payload.collections.import_batches ?? []) {
+      await upsertRecord('import_batches', ib as unknown as { id: string } & Record<string, unknown>)
+    }
+
+    invalidateDashboardAnalyticsCache()
   }
 }

@@ -4,6 +4,7 @@ import {
   canAccessRoute,
   canApproveNegativeStock,
   canPerformCollectionAction,
+  canReverseOrApprove,
   canSeeFinancialData,
   IMMUTABLE_COLLECTIONS,
 } from './rbac'
@@ -105,9 +106,18 @@ describe('PocketBase API Rules & RBAC Matrix', () => {
       expect(canPerformCollectionAction('economat', col, 'list')).toBe(true)
       expect(canPerformCollectionAction('economat', col, 'create')).toBe(true)
     }
+    // Economat can initiate purchase/exit reversals (same-day own doc or pending approval),
+    // but cannot approve reversals or reverse inventory sessions / import batches
     expect(canPerformCollectionAction('economat', 'purchases', 'reverse')).toBe(
-      false
+      true
     )
+    expect(
+      canPerformCollectionAction('economat', 'inventory_sessions', 'reverse')
+    ).toBe(false)
+    expect(
+      canPerformCollectionAction('economat', 'import_batches', 'reverse')
+    ).toBe(false)
+    expect(canReverseOrApprove('economat')).toBe(false)
     expect(canPerformCollectionAction('economat', 'users', 'list')).toBe(false)
     expect(canApproveNegativeStock('economat')).toBe(false)
   })

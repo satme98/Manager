@@ -118,9 +118,17 @@ export function CommandMenu() {
     })
   }
 
-  const navigateToInvoice = () => {
+  const navigateToInvoice = (invoiceNo: string) => {
     runCommand(() => {
       void navigate({ to: '/factures-paiements' })
+      setTimeout(() => {
+        window.history.replaceState(
+          null,
+          '',
+          `/factures-paiements?q=${encodeURIComponent(invoiceNo)}`
+        )
+        window.dispatchEvent(new Event('monarq:navigate'))
+      }, 30)
     })
   }
 
@@ -196,7 +204,7 @@ export function CommandMenu() {
                   <CommandItem
                     key={`inv-${inv.id}`}
                     value={`Facture ${inv.invoice_no} ${inv.date}`}
-                    onSelect={navigateToInvoice}
+                    onSelect={() => navigateToInvoice(inv.invoice_no)}
                   >
                     <Receipt className='mr-2 size-4 text-[#B98900]' />
                     <span className='font-mono text-xs font-semibold'>

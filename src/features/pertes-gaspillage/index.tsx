@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import * as XLSX from 'xlsx'
@@ -29,6 +29,7 @@ import { toast } from 'sonner'
 import { repository } from '@/data'
 import { computeLossesReport, type ChartGranularity } from '@/data/analytics'
 import { formatCurrencyMAD, formatDateFR, formatQuantity } from '@/lib/formatters'
+import { canPerformCollectionAction } from '@/lib/rbac'
 import { useAuthStore } from '@/stores/auth-store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -68,26 +69,65 @@ export function PertesGaspillage() {
   const role = auth.user?.role ?? 'consultation'
   const priceHidden = role === 'cuisine'
 
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  const [dateFrom, setDateFrom] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('from') || ''
+  })
+  const [dateTo, setDateTo] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('to') || ''
+  })
   const [productFilter, setProductFilter] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [destinationFilter, setDestinationFilter] = useState('all')
   const [reasonFilter, setReasonFilter] = useState('all')
   const [granularity, setGranularity] = useState<ChartGranularity>('day')
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const syncFromUrl = () => {
+      const params = new URLSearchParams(window.location.search)
+      const from = params.get('from')
+      if (from !== null) setDateFrom(from)
+      const to = params.get('to')
+      if (to !== null) setDateTo(to)
+    }
+    window.addEventListener('popstate', syncFromUrl)
+    window.addEventListener('monarq:navigate', syncFromUrl)
+    return () => {
+      window.removeEventListener('popstate', syncFromUrl)
+      window.removeEventListener('monarq:navigate', syncFromUrl)
+    }
+  }, [])
+
   const { data: dataset, isLoading } = useQuery({
-    queryKey: ['pertes-gaspillage-dataset'],
+    queryKey: ['pertes-gaspillage-dataset', role],
     queryFn: async () => {
+      const canListSuppliers = canPerformCollectionAction(
+        role,
+        'suppliers',
+        'list'
+      )
+      const canListPurchases = canPerformCollectionAction(
+        role,
+        'purchases',
+        'list'
+      )
+      const canListUsers = canPerformCollectionAction(role, 'users', 'list')
+
       const [products, suppliers, pur, ext, inv, settings, users] =
         await Promise.all([
           repository.listProducts(),
-          repository.listSuppliers(),
-          repository.listPurchases(),
+          canListSuppliers ? repository.listSuppliers() : Promise.resolve([]),
+          canListPurchases
+            ? repository.listPurchases()
+            : Promise.resolve({ headers: [], lines: [] }),
           repository.listExits(),
           repository.listInventories(),
           repository.listSettings(),
-          repository.listUsers(),
+          canListUsers
+            ? repository.listUsers()
+            : repository.getCurrentUser().then((u) => (u ? [u] : [])),
         ])
       return {
         products,

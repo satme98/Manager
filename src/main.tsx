@@ -22,9 +22,6 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: (failureCount, error) => {
-        // eslint-disable-next-line no-console
-        if (import.meta.env.DEV) console.log({ failureCount, error })
-
         if (failureCount >= 0 && import.meta.env.DEV) return false
         if (failureCount > 3 && import.meta.env.PROD) return false
 
@@ -54,7 +51,7 @@ const queryClient = new QueryClient({
         if (error.response?.status === 401) {
           toast.error('Session expirée. Veuillez vous reconnecter.')
           useAuthStore.getState().auth.reset()
-          const redirect = `${router.history.location.href}`
+          const redirect = `${router.history.location.pathname}`
           router.navigate({ to: '/sign-in', search: { redirect } })
         }
         if (error.response?.status === 500) {

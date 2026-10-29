@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import * as XLSX from 'xlsx'
@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { repository } from '@/data'
+import { invalidateDashboardAnalyticsCache } from '@/data/analytics'
 import type {
   ProductRecord,
   StockRecalculationReport,
@@ -204,6 +205,23 @@ export function EtatDesStocks() {
     return new URLSearchParams(window.location.search).get('missingMin') === 'true'
   })
   const [onlyNegativeStock, setOnlyNegativeStock] = useState(false)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const syncFromUrl = () => {
+      const params = new URLSearchParams(window.location.search)
+      setCategoryFilter(params.get('category') || 'all')
+      setStatusFilter(params.get('status') || 'all')
+      setOnlyMissingPrice(params.get('priceMissing') === 'true')
+      setOnlyMissingMin(params.get('missingMin') === 'true')
+    }
+    window.addEventListener('popstate', syncFromUrl)
+    window.addEventListener('monarq:navigate', syncFromUrl)
+    return () => {
+      window.removeEventListener('popstate', syncFromUrl)
+      window.removeEventListener('monarq:navigate', syncFromUrl)
+    }
+  }, [])
 
   // Sort & Pagination
   const [sortField, setSortField] = useState<SortField>('ref')
@@ -590,7 +608,9 @@ export function EtatDesStocks() {
     setSavingMin(true)
     try {
       await repository.updateProduct(product.id, { min_stock: num })
+      invalidateDashboardAnalyticsCache()
       await queryClient.invalidateQueries({ queryKey: ['products'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
       toast.success(
         `Stock minimum mis à jour pour « ${product.name} » (${num !== null ? `${formatNumberFR(num)} ${product.unit}` : 'Non défini'}).`
       )
@@ -613,7 +633,9 @@ export function EtatDesStocks() {
       const report = await repository.recalculateAllStock()
       setRecalcReport(report)
       setRecalcDialogOpen(true)
+      invalidateDashboardAnalyticsCache()
       await queryClient.invalidateQueries({ queryKey: ['products'] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
       if (report.differencesCount === 0) {
         toast.success(
           `Stock recalculé pour ${report.totalProductsChecked} produits : aucun écart détecté.`

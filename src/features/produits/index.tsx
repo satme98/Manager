@@ -26,6 +26,7 @@ import {
 import { toast } from 'sonner'
 import * as XLSX from 'xlsx'
 import { repository } from '@/data'
+import { invalidateDashboardAnalyticsCache } from '@/data/analytics'
 import {
   type ConfirmedInventoryCount,
   type ProductStockResult,
@@ -770,8 +771,10 @@ export function ProduitsPage() {
       }
     },
     onSuccess: (saved) => {
+      invalidateDashboardAnalyticsCache()
       void queryClient.invalidateQueries({ queryKey: ['products'] })
       void queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
       setUnitChangeConfirmOpen(false)
       setDrawerOpen(false)
       if (!editingProduct) {
@@ -836,8 +839,10 @@ export function ProduitsPage() {
     },
     onSuccess: (updated) => {
       setArchiveTargetProduct(null)
+      invalidateDashboardAnalyticsCache()
       void queryClient.invalidateQueries({ queryKey: ['products'] })
       void queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
       toast.success(
         updated.archived
           ? `Produit « ${updated.name} » archivé.`
@@ -893,8 +898,10 @@ export function ProduitsPage() {
     onSuccess: (count) => {
       setBulkActionOpen(false)
       setSelectedIds(new Set())
+      invalidateDashboardAnalyticsCache()
       void queryClient.invalidateQueries({ queryKey: ['products'] })
       void queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      void queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
       toast.success(`${count} produit(s) mis à jour avec succès.`)
     },
     onError: (err: Error) => {

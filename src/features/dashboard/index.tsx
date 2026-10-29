@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode, useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import {
   AlertCircle,
   AlertTriangle,
@@ -102,12 +102,24 @@ const CATEGORY_COLORS = [
   '#6D7175',
 ]
 
+let activeDashboardNavigate: ((opts: { to: string }) => Promise<void>) | null =
+  null
+
 function navigateToFilteredUrl(path: string, params?: Record<string, string>) {
   if (typeof window === 'undefined') return
   const search = params ? new URLSearchParams(params).toString() : ''
   const target = search ? `${path}?${search}` : path
-  window.history.pushState({}, '', target)
-  window.dispatchEvent(new PopStateEvent('popstate'))
+  if (activeDashboardNavigate) {
+    void activeDashboardNavigate({ to: path }).then(() => {
+      window.history.replaceState({}, '', target)
+      window.dispatchEvent(new Event('monarq:navigate'))
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+  } else {
+    window.history.pushState({}, '', target)
+    window.dispatchEvent(new Event('monarq:navigate'))
+    window.dispatchEvent(new PopStateEvent('popstate'))
+  }
 }
 
 // ============================================================================
@@ -273,12 +285,20 @@ function ReversedExcludedFootnote() {
 }
 
 export function Dashboard() {
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const user = useAuthStore((s) => s.auth.user)
   const role = user?.role ?? 'consultation'
   const isCuisine = role === 'cuisine'
   const isEconomat = role === 'economat'
   const canEditProducts = canPerformCollectionAction(role, 'products', 'update')
+
+  useEffect(() => {
+    activeDashboardNavigate = (opts) => navigate({ to: opts.to as never })
+    return () => {
+      activeDashboardNavigate = null
+    }
+  }, [navigate])
 
   // URL-synced date range state (default = 'this_month')
   const [rangePreset, setRangePreset] = useState<DashboardRangePreset>(() => {

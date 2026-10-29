@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { repository } from '@/data'
+import { invalidateDashboardAnalyticsCache } from '@/data/analytics'
 import type {
   InventoryLineRecord,
   InventoryScope,
@@ -245,9 +246,11 @@ export function Inventaires() {
   const userCanConfirm = canConfirmInventory(role, allowEconomatConfirm)
 
   const invalidateAllInventoryQueries = async () => {
+    invalidateDashboardAnalyticsCache()
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['inventories'] }),
       queryClient.invalidateQueries({ queryKey: ['products'] }),
+      queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] }),
     ])
   }
 
@@ -391,6 +394,27 @@ export function Inventaires() {
       setMode('detail')
     }
   }
+
+  // Open session automatically when navigated with ?doc=<sessionId>
+  useEffect(() => {
+    if (typeof window === 'undefined' || sessions.length === 0) return
+    const checkDocParam = () => {
+      const docId = new URLSearchParams(window.location.search).get('doc')
+      if (!docId) return
+      const target = sessions.find((s) => s.id === docId)
+      if (target && activeSessionId !== target.id) {
+        openSession(target)
+      }
+    }
+    checkDocParam()
+    window.addEventListener('popstate', checkDocParam)
+    window.addEventListener('monarq:navigate', checkDocParam)
+    return () => {
+      window.removeEventListener('popstate', checkDocParam)
+      window.removeEventListener('monarq:navigate', checkDocParam)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions, activeSessionId])
 
   // Persist draftInputs to localStorage on every keystroke
   useEffect(() => {

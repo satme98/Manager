@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import * as XLSX from 'xlsx'
@@ -31,7 +31,11 @@ import {
   type SupplierOutstandingBalanceRow,
 } from '@/data/analytics'
 import { formatCurrencyMAD, formatDateFR, formatDateTimeFR } from '@/lib/formatters'
-import { canReverseOrApprove, isReadOnlyRole } from '@/lib/rbac'
+import {
+  canPerformCollectionAction,
+  canReverseOrApprove,
+  isReadOnlyRole,
+} from '@/lib/rbac'
 import { useAuthStore } from '@/stores/auth-store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -97,14 +101,58 @@ export function FacturesPaiements() {
   // Active tab: 'invoices' | 'suppliers' | 'history'
   const [activeTab, setActiveTab] = useState<'invoices' | 'suppliers' | 'history'>('invoices')
 
-  // Filters
-  const [search, setSearch] = useState('')
-  const [supplierFilter, setSupplierFilter] = useState('all')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'unpaid' | 'paid' | 'partial'>('all')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  // Filters (initialized from URL query parameters when navigated from Dashboard or CommandMenu)
+  const [search, setSearch] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('q') || ''
+  })
+  const [supplierFilter, setSupplierFilter] = useState(() => {
+    if (typeof window === 'undefined') return 'all'
+    return new URLSearchParams(window.location.search).get('supplier') || 'all'
+  })
+  const [statusFilter, setStatusFilter] = useState<
+    'all' | 'unpaid' | 'paid' | 'partial'
+  >(() => {
+    if (typeof window === 'undefined') return 'all'
+    const s = new URLSearchParams(window.location.search).get('status')
+    if (s === 'unpaid' || s === 'paid' || s === 'partial') return s
+    return 'all'
+  })
+  const [dateFrom, setDateFrom] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('from') || ''
+  })
+  const [dateTo, setDateTo] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('to') || ''
+  })
   const [minAmountStr, setMinAmountStr] = useState('')
   const [maxAmountStr, setMaxAmountStr] = useState('')
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const syncFromUrl = () => {
+      const params = new URLSearchParams(window.location.search)
+      const q = params.get('q')
+      if (q !== null) setSearch(q)
+      const sup = params.get('supplier')
+      if (sup) setSupplierFilter(sup)
+      const st = params.get('status')
+      if (st === 'unpaid' || st === 'paid' || st === 'partial' || st === 'all') {
+        setStatusFilter(st)
+      }
+      const from = params.get('from')
+      if (from !== null) setDateFrom(from)
+      const to = params.get('to')
+      if (to !== null) setDateTo(to)
+    }
+    window.addEventListener('popstate', syncFromUrl)
+    window.addEventListener('monarq:navigate', syncFromUrl)
+    return () => {
+      window.removeEventListener('popstate', syncFromUrl)
+      window.removeEventListener('monarq:navigate', syncFromUrl)
+    }
+  }, [])
 
   // Sort & Pagination
   const [sortField, setSortField] = useState<InvoiceSortField>('date')
@@ -134,8 +182,9 @@ export function FacturesPaiements() {
   const [statementSupplier, setStatementSupplier] = useState<SupplierOutstandingBalanceRow | null>(null)
 
   const { data: dataset, isLoading } = useQuery({
-    queryKey: ['factures-paiements-dataset'],
+    queryKey: ['factures-paiements-dataset', role],
     queryFn: async () => {
+      const canListUsers = canPerformCollectionAction(role, 'users', 'list')
       const [
         products,
         suppliers,
@@ -152,7 +201,9 @@ export function FacturesPaiements() {
         repository.listExits(),
         repository.listInventories(),
         repository.listSettings(),
-        repository.listUsers(),
+        canListUsers
+          ? repository.listUsers()
+          : repository.getCurrentUser().then((u) => (u ? [u] : [])),
         repository.listPaymentEvents(),
       ])
       return {

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { repository } from '@/data'
+import { invalidateDashboardAnalyticsCache } from '@/data/analytics'
 import type {
   AuditLogRecord,
   ExitLineRecord,
@@ -226,21 +227,6 @@ export function SortiesDeStock() {
     return new URLSearchParams(window.location.search).get('doc')
   })
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const checkParams = () => {
-      const params = new URLSearchParams(window.location.search)
-      if (params.get('mode') === 'new') {
-        setViewMode('new')
-      } else if (params.get('doc')) {
-        setSelectedDocId(params.get('doc'))
-        setViewMode('detail')
-      }
-    }
-    window.addEventListener('popstate', checkParams)
-    return () => window.removeEventListener('popstate', checkParams)
-  }, [])
-
   // List filters (initialized from URL query parameters when navigated from Dashboard)
   const [searchQuery, setSearchQuery] = useState('')
   const [dateFrom, setDateFrom] = useState(() => {
@@ -263,6 +249,37 @@ export function SortiesDeStock() {
     }
     return 'all'
   })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const checkParams = () => {
+      const params = new URLSearchParams(window.location.search)
+      if (params.get('mode') === 'new') {
+        setViewMode('new')
+      } else if (params.get('doc')) {
+        setSelectedDocId(params.get('doc'))
+        setViewMode('detail')
+      }
+      const from = params.get('from')
+      if (from !== null) setDateFrom(from)
+      const to = params.get('to')
+      if (to !== null) setDateTo(to)
+      const f = params.get('filter')
+      if (
+        f === 'with_losses' ||
+        f === 'reversed_only' ||
+        f === 'pending_approval'
+      ) {
+        setWithLossesFilter(f)
+      }
+    }
+    window.addEventListener('popstate', checkParams)
+    window.addEventListener('monarq:navigate', checkParams)
+    return () => {
+      window.removeEventListener('popstate', checkParams)
+      window.removeEventListener('monarq:navigate', checkParams)
+    }
+  }, [])
   const [sortField, setSortField] = useState<SortField>('date')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [pageSize, setPageSize] = useState<number>(25)
@@ -876,9 +893,12 @@ export function SortiesDeStock() {
       })
     },
     onSuccess: (created) => {
+      invalidateDashboardAnalyticsCache()
       queryClient.invalidateQueries({ queryKey: ['exits'] })
       queryClient.invalidateQueries({ queryKey: ['products'] })
       queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['pertes-gaspillage-dataset'] })
       setConfirmSaveDialogOpen(false)
       const fresh = createFreshExitDraft(draft.destination)
       setDraft(fresh)
@@ -926,8 +946,12 @@ export function SortiesDeStock() {
       return { reversalResult, original, mode }
     },
     onSuccess: ({ reversalResult, original, mode }) => {
+      invalidateDashboardAnalyticsCache()
       queryClient.invalidateQueries({ queryKey: ['exits'] })
+      queryClient.invalidateQueries({ queryKey: ['products'] })
       queryClient.invalidateQueries({ queryKey: ['audit_log'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-analytics'] })
+      queryClient.invalidateQueries({ queryKey: ['pertes-gaspillage-dataset'] })
       setReversalDialogOpen(false)
       setReversalReason('')
       setApproveCutoffOverride(false)
