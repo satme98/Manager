@@ -23,13 +23,17 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
 
   useEffect(() => {
     if (!auth.user || !auth.accessToken) {
+      const targetRedirect =
+        location.pathname && !location.pathname.startsWith('/sign-in')
+          ? location.pathname
+          : undefined
       navigate({
         to: '/sign-in',
-        search: { redirect: location.href },
+        search: targetRedirect ? { redirect: targetRedirect } : {},
         replace: true,
       })
     }
-  }, [auth.user, auth.accessToken, location.href, navigate])
+  }, [auth.user, auth.accessToken, location.pathname, navigate])
 
   if (!auth.user || !auth.accessToken) {
     return null

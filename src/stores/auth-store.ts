@@ -17,12 +17,52 @@ interface AuthState {
   }
 }
 
+function readStorageItem(key: string): string | undefined {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const val = window.localStorage.getItem(key)
+      if (val) return val
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  const cookieVal = getCookie(key)
+  if (!cookieVal) return undefined
+  try {
+    return decodeURIComponent(cookieVal)
+  } catch {
+    return cookieVal
+  }
+}
+
+function writeStorageItem(key: string, value: string): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(key, value)
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  setCookie(key, encodeURIComponent(value))
+}
+
+function removeStorageItem(key: string): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(key)
+    }
+  } catch {
+    // Ignore storage access errors
+  }
+  removeCookie(key)
+}
+
 function parseTokenCookie(raw: string | undefined): string {
   if (!raw) return ''
   try {
     return JSON.parse(raw) as string
   } catch {
-    return ''
+    return raw
   }
 }
 
@@ -36,8 +76,8 @@ function parseUserCookie(raw: string | undefined): UserRecord | null {
 }
 
 export const useAuthStore = create<AuthState>()((set) => {
-  const initToken = parseTokenCookie(getCookie(ACCESS_TOKEN_COOKIE))
-  const initUser = parseUserCookie(getCookie(AUTH_USER_COOKIE))
+  const initToken = parseTokenCookie(readStorageItem(ACCESS_TOKEN_COOKIE))
+  const initUser = parseUserCookie(readStorageItem(AUTH_USER_COOKIE))
 
   return {
     auth: {
@@ -45,22 +85,22 @@ export const useAuthStore = create<AuthState>()((set) => {
       setUser: (user) =>
         set((state) => {
           if (user) {
-            setCookie(AUTH_USER_COOKIE, JSON.stringify(user))
+            writeStorageItem(AUTH_USER_COOKIE, JSON.stringify(user))
           } else {
-            removeCookie(AUTH_USER_COOKIE)
+            removeStorageItem(AUTH_USER_COOKIE)
           }
           return { ...state, auth: { ...state.auth, user } }
         }),
       accessToken: initToken,
       setAccessToken: (accessToken) =>
         set((state) => {
-          setCookie(ACCESS_TOKEN_COOKIE, JSON.stringify(accessToken))
+          writeStorageItem(ACCESS_TOKEN_COOKIE, JSON.stringify(accessToken))
           return { ...state, auth: { ...state.auth, accessToken } }
         }),
       setSession: (user, accessToken) =>
         set((state) => {
-          setCookie(AUTH_USER_COOKIE, JSON.stringify(user))
-          setCookie(ACCESS_TOKEN_COOKIE, JSON.stringify(accessToken))
+          writeStorageItem(AUTH_USER_COOKIE, JSON.stringify(user))
+          writeStorageItem(ACCESS_TOKEN_COOKIE, JSON.stringify(accessToken))
           return {
             ...state,
             auth: { ...state.auth, user, accessToken },
@@ -68,13 +108,13 @@ export const useAuthStore = create<AuthState>()((set) => {
         }),
       resetAccessToken: () =>
         set((state) => {
-          removeCookie(ACCESS_TOKEN_COOKIE)
+          removeStorageItem(ACCESS_TOKEN_COOKIE)
           return { ...state, auth: { ...state.auth, accessToken: '' } }
         }),
       reset: () =>
         set((state) => {
-          removeCookie(ACCESS_TOKEN_COOKIE)
-          removeCookie(AUTH_USER_COOKIE)
+          removeStorageItem(ACCESS_TOKEN_COOKIE)
+          removeStorageItem(AUTH_USER_COOKIE)
           return {
             ...state,
             auth: { ...state.auth, user: null, accessToken: '' },

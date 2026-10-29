@@ -36,6 +36,56 @@ interface UserAuthFormProps extends React.HTMLAttributes<HTMLFormElement> {
   redirectTo?: string
 }
 
+function resolveSafeRedirectPath(redirectTo?: string): string {
+  if (!redirectTo) return '/'
+  try {
+    const base =
+      typeof window !== 'undefined'
+        ? window.location.origin
+        : 'http://localhost:3000'
+    const url = new URL(redirectTo, base)
+    const pathname = url.pathname || '/'
+    if (pathname.startsWith('/sign-in') || pathname.startsWith('/clerk')) {
+      return '/'
+    }
+    return pathname
+  } catch {
+    const clean = redirectTo.split('?')[0].split('#')[0]
+    if (!clean || !clean.startsWith('/') || clean.startsWith('/sign-in')) {
+      return '/'
+    }
+    return clean
+  }
+}
+
+const QUICK_ACCOUNTS = [
+  {
+    label: 'Admin',
+    email: 'admin@monarq.ma',
+    password: 'admin1234',
+  },
+  {
+    label: 'Manager',
+    email: 'manager@monarq.ma',
+    password: 'manager1234',
+  },
+  {
+    label: 'Magasinier',
+    email: 'magasinier@monarq.ma',
+    password: 'magasinier1234',
+  },
+  {
+    label: 'Cuisine',
+    email: 'cuisine@monarq.ma',
+    password: 'cuisine1234',
+  },
+  {
+    label: 'Consultation',
+    email: 'consultation@monarq.ma',
+    password: 'consultation1234',
+  },
+] as const
+
 export function UserAuthForm({
   className,
   redirectTo,
@@ -44,26 +94,26 @@ export function UserAuthForm({
   const [isLoading, setIsLoading] = useState(false)
   const navigate = useNavigate()
   const { auth } = useAuthStore()
+  const isMemoryMode = repository.adapterName === 'memory'
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      email: '',
-      password: '',
+      email: isMemoryMode ? 'admin@monarq.ma' : '',
+      password: isMemoryMode ? 'admin1234' : '',
     },
   })
 
-  async function onSubmit(data: z.infer<typeof formSchema>) {
+  async function performLogin(email: string, password: string) {
     setIsLoading(true)
     try {
-      const { user, token } = await repository.login(data.email, data.password)
-      auth.setUser(user)
-      auth.setAccessToken(token)
+      const { user, token } = await repository.login(email, password)
+      auth.setSession(user, token)
       toast.success(
         `Bienvenue, ${user.name} (${ROLE_LABELS[user.role]}) !`
       )
-      const targetPath = redirectTo || '/'
-      navigate({ to: targetPath, replace: true })
+      const targetPath = resolveSafeRedirectPath(redirectTo)
+      await navigate({ to: targetPath, replace: true })
     } catch (err) {
       const message =
         err instanceof Error
@@ -75,9 +125,14 @@ export function UserAuthForm({
     }
   }
 
-  function fillPreviewAdmin() {
-    form.setValue('email', 'admin@monarq.ma', { shouldValidate: true })
-    form.setValue('password', 'admin1234', { shouldValidate: true })
+  async function onSubmit(data: z.infer<typeof formSchema>) {
+    await performLogin(data.email, data.password)
+  }
+
+  async function handleQuickLogin(email: string, password: string) {
+    form.setValue('email', email, { shouldValidate: true })
+    form.setValue('password', password, { shouldValidate: true })
+    await performLogin(email, password)
   }
 
   return (
@@ -94,7 +149,7 @@ export function UserAuthForm({
             <FormItem>
               <FormLabel>Adresse e-mail</FormLabel>
               <FormControl>
-                <Input placeholder='nom@monarq.ma' {...field} />
+                <Input placeholder='admin@monarq.ma' {...field} />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -118,28 +173,40 @@ export function UserAuthForm({
           Se connecter
         </Button>
 
-        {repository.adapterName === 'memory' && (
-          <div className='mt-2 rounded-md border border-border bg-muted/40 p-2.5 text-xs'>
-            <div className='flex items-center justify-between gap-2'>
+        {isMemoryMode && (
+          <div className='mt-2 rounded-md border border-[#E1E3E5] bg-[#F6F6F7] p-3 text-xs'>
+            <div className='mb-2 flex items-center justify-between gap-2'>
               <div>
-                <p className='font-medium text-foreground'>
-                  Aperçu AI Studio (Adaptateur mémoire)
+                <p className='font-semibold text-[#202223]'>
+                  Connexion directe en 1 clic (Aperçu)
                 </p>
-                <p className='text-muted-foreground'>
-                  Admin démo : <span className='font-mono'>admin@monarq.ma</span>{' '}
-                  / <span className='font-mono'>admin1234</span>
+                <p className='text-[#6D7175]'>
+                  Identifiants par défaut :{' '}
+                  <span className='font-mono font-medium text-[#202223]'>
+                    admin@monarq.ma
+                  </span>{' '}
+                  /{' '}
+                  <span className='font-mono font-medium text-[#202223]'>
+                    admin1234
+                  </span>
                 </p>
               </div>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                className='h-7 px-2 text-xs'
-                onClick={fillPreviewAdmin}
-              >
-                <KeyRound className='mr-1 h-3 w-3' />
-                Remplir
-              </Button>
+            </div>
+            <div className='flex flex-wrap gap-1.5'>
+              {QUICK_ACCOUNTS.map((acc) => (
+                <Button
+                  key={acc.email}
+                  type='button'
+                  variant='outline'
+                  size='sm'
+                  disabled={isLoading}
+                  className='h-7 bg-white px-2.5 text-xs font-medium hover:bg-[#303030] hover:text-white'
+                  onClick={() => handleQuickLogin(acc.email, acc.password)}
+                >
+                  <KeyRound className='mr-1 h-3 w-3' />
+                  {acc.label}
+                </Button>
+              ))}
             </div>
           </div>
         )}
