@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import * as XLSX from 'xlsx'
 import { MemoryDataRepository } from '@/data/memory-adapter'
 import { buildMonarqCleanImportWorkbookBuffer } from '@/data/monarq-real-import-dataset'
@@ -10,6 +10,7 @@ import {
   parseExcelDateToISO,
 } from './excel-import-engine'
 import { runExcelParityCheck } from './excel-parity-engine'
+import { clearStockCache } from './stock-engine'
 
 function createFixtureWorkbookBuffer(): ArrayBuffer {
   const wb = XLSX.utils.book_new()
@@ -161,6 +162,13 @@ function createFixtureWorkbookBuffer(): ArrayBuffer {
 }
 
 describe('Excel Import Wizard Engine (Stage 3)', () => {
+  beforeEach(() => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.clear()
+    }
+    clearStockCache()
+  })
+
   it('evaluates formula strings and parses Excel serial & DD/MM/YYYY dates', () => {
     expect(evaluateSimpleArithmeticFormula('=35*1.2')).toBeCloseTo(42, 5)
     expect(evaluateSimpleArithmeticFormula('=(100+20)/2')).toBeCloseTo(60, 5)

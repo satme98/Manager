@@ -35,6 +35,7 @@ import {
   type DashboardAnalyticsQueryOptions,
   type DashboardAnalyticsResult,
 } from './analytics'
+import { buildPermanentMonarqDatabaseState } from './monarq-permanent-seed'
 import { canConfirmInventory, canPerformCollectionAction } from '@/lib/rbac'
 import {
   checkDocumentBeforeInventoryCutoff,
@@ -97,13 +98,30 @@ function createInitialEmptyState(): MemoryDatabaseState {
   }
 }
 
-function loadState(): MemoryDatabaseState {
+function loadState(seedWithPermanentDataset = false): MemoryDatabaseState {
+  const createFallback = (): MemoryDatabaseState => {
+    if (seedWithPermanentDataset) {
+      const seeded = buildPermanentMonarqDatabaseState()
+      saveState(seeded)
+      return seeded
+    }
+    return createInitialEmptyState()
+  }
+
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (!raw) return createInitialEmptyState()
+    if (!raw) return createFallback()
     const parsed = JSON.parse(raw) as MemoryDatabaseState
     if (!Array.isArray(parsed.users) || parsed.users.length === 0) {
-      return createInitialEmptyState()
+      return createFallback()
+    }
+    if (
+      seedWithPermanentDataset &&
+      (!Array.isArray(parsed.products) || parsed.products.length === 0) &&
+      (!Array.isArray(parsed.purchases) || parsed.purchases.length === 0) &&
+      (!Array.isArray(parsed.exits) || parsed.exits.length === 0)
+    ) {
+      return createFallback()
     }
     const now = new Date().toISOString()
     let hasAdmin = false
@@ -136,7 +154,7 @@ function loadState(): MemoryDatabaseState {
     }
     return parsed
   } catch {
-    return createInitialEmptyState()
+    return createFallback()
   }
 }
 
@@ -160,8 +178,8 @@ export class MemoryDataRepository implements DataRepository {
   private state: MemoryDatabaseState
   private writeQueue: Promise<unknown> = Promise.resolve()
 
-  constructor() {
-    this.state = loadState()
+  constructor(options?: { seedWithPermanentDataset?: boolean }) {
+    this.state = loadState(Boolean(options?.seedWithPermanentDataset))
   }
 
   private withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -2659,6 +2677,30 @@ export class MemoryDataRepository implements DataRepository {
         products_restored: this.state.products.length,
         purchases_restored: this.state.purchases.length,
         exits_restored: this.state.exits.length,
+      })
+    })
+  }
+
+  async resetToPermanentDemoData(): Promise<void> {
+    return this.withWriteLock(async () => {
+      const actor = this.getActiveAuthUser()
+      if (actor.role !== 'admin') {
+        throw new Error(
+          'Seul un Administrateur peut réinitialiser la base avec les données MONARQ.'
+        )
+      }
+
+      this.state = buildPermanentMonarqDatabaseState()
+      clearStockCache()
+      invalidateDashboardAnalyticsCache()
+      saveState(this.state)
+
+      this.recordAudit(actor, 'update', 'settings', 'permanent_seed_reset', {
+        operation: 'reset_to_permanent_demo_data',
+        products_count: this.state.products.length,
+        suppliers_count: this.state.suppliers.length,
+        purchases_count: this.state.purchases.length,
+        exits_count: this.state.exits.length,
       })
     })
   }

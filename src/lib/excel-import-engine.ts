@@ -976,7 +976,7 @@ export function parseAndValidateWorkbook(
 
       // Payment status OUI/NON check
       const upperPay = rawPayment.toUpperCase()
-      let paymentStatus: PaymentStatus = 'unpaid'
+      let paymentStatus: PaymentStatus
       let isAmbiguousPayment = false
       if (upperPay === 'OUI' || upperPay === 'RÉGLÉ' || upperPay === 'REGLE') {
         paymentStatus = 'paid'

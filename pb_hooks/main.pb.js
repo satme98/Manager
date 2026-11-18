@@ -16,7 +16,9 @@
 function writeAuditLog(app, authRecord, action, collectionName, recordId, details) {
   const auditCol = app.findCollectionByNameOrId('audit_log')
   const logRecord = new Record(auditCol)
-  logRecord.set('user', authRecord ? authRecord.id : '')
+  const isRegularUser =
+    authRecord && authRecord.collection && authRecord.collection().name === 'users'
+  logRecord.set('user', isRegularUser ? authRecord.id : '')
   logRecord.set('user_email', authRecord ? authRecord.getString('email') : 'system')
   logRecord.set('timestamp', new Date().toISOString())
   logRecord.set('action', action)
@@ -125,7 +127,8 @@ function computeServerProductStock(app, productId) {
 
 // 1. Normalize and validate products.ref (case-insensitive, trimmed)
 onRecordCreateRequest((e) => {
-  const ref = (e.record.getString('ref') || '').trim().toUpperCase()
+  const rawRef = (e.record.getString('ref') || '').trim()
+  const ref = rawRef.toUpperCase()
   const name = (e.record.getString('name') || '').trim()
   if (!ref || !name) {
     throw new BadRequestError('La référence et le nom du produit sont obligatoires.')
@@ -142,11 +145,14 @@ onRecordCreateRequest((e) => {
       throw new BadRequestError(`La référence produit "${ref}" existe déjà.`)
     }
   }
-  e.record.set('ref', ref)
+  const preserveRawRef = Boolean(
+    e.record.getString('source_row_id') || e.record.getString('import_batch_id')
+  )
+  e.record.set('ref', preserveRawRef ? rawRef : ref)
   e.record.set('name', name)
   e.next()
   writeAuditLog(e.app, e.auth, 'create', 'products', e.record.id, {
-    ref,
+    ref: preserveRawRef ? rawRef : ref,
     name,
   })
 }, 'products')
@@ -193,11 +199,15 @@ onRecordUpdateRequest((e) => {
     }
   }
 
-  e.record.set('ref', newRef)
+  const finalRef =
+    newRef === oldRef
+      ? (e.record.getString('ref') || existing.getString('ref') || '').trim()
+      : newRef
+  e.record.set('ref', finalRef)
   e.record.set('name', (e.record.getString('name') || '').trim())
   e.next()
   writeAuditLog(e.app, e.auth, 'update', 'products', e.record.id, {
-    ref: newRef,
+    ref: finalRef,
     unit: newUnit,
     archived: e.record.getBool('archived'),
   })

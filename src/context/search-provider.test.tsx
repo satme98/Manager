@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, type RenderResult } from 'vitest-browser-react'
 import { userEvent } from 'vitest/browser'
+import { useAuthStore } from '@/stores/auth-store'
 import { SearchProvider } from '@/context/search-provider'
 
-const COMMAND_MENU_PLACEHOLDER = 'Rechercher une page ou une commande...'
+const COMMAND_MENU_PLACEHOLDER =
+  'Rechercher un produit (nom, réf.), une facture (N°), un fournisseur ou une page...'
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -25,7 +28,14 @@ vi.mock('@/context/theme-provider', () => ({
 type ShortcutModifier = 'Control' | 'Meta'
 
 async function renderWithSearchProvider() {
-  return await render(<SearchProvider>{null}</SearchProvider>)
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return await render(
+    <QueryClientProvider client={queryClient}>
+      <SearchProvider>{null}</SearchProvider>
+    </QueryClientProvider>
+  )
 }
 
 async function openCommandPalette(
@@ -54,6 +64,10 @@ async function openCommandPalette(
 describe('SearchProvider and CommandMenu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.clear()
+    }
+    useAuthStore.getState().auth.reset()
   })
 
   it('renders the command palette in French when open', async () => {
@@ -68,7 +82,9 @@ describe('SearchProvider and CommandMenu', () => {
     await expect.element(getByText('Thème')).toBeInTheDocument()
     await expect.element(getByText('Clair')).toBeInTheDocument()
     await expect.element(getByText('Sombre')).toBeInTheDocument()
-    await expect.element(getByText('Système')).toBeInTheDocument()
+    await expect
+      .element(getByText('Système', { exact: true }))
+      .toBeInTheDocument()
     await expect.element(getByText('Tableau de bord')).toBeInTheDocument()
   })
 

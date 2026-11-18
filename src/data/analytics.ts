@@ -655,7 +655,45 @@ export function computeDashboardAnalytics(
 ): DashboardAnalyticsResult {
   const role: UserRole = options?.role ?? 'admin'
   const priceHidden = role === 'cuisine'
-  const range = resolveDashboardDateRange(options)
+
+  let effectiveOptions = options
+  if (!options?.referenceDate) {
+    const currentMonth = new Date().toISOString().slice(0, 7)
+    const revPurIds = new Set(
+      dataset.purchases
+        .map((p) => p.reversed_of)
+        .filter((id): id is string => Boolean(id))
+    )
+    const revExtIds = new Set(
+      dataset.exits
+        .map((x) => x.reversed_of)
+        .filter((id): id is string => Boolean(id))
+    )
+    let hasCurrentMonthMovement = false
+    let latestDatasetDate = ''
+    for (const p of dataset.purchases) {
+      if (isDocumentReversedOrReversal(p, revPurIds)) continue
+      const d = p.date.trim().slice(0, 10)
+      if (d.startsWith(currentMonth)) hasCurrentMonthMovement = true
+      if (d > latestDatasetDate) latestDatasetDate = d
+    }
+    for (const x of dataset.exits) {
+      if (isDocumentReversedOrReversal(x, revExtIds)) continue
+      const d = x.date.trim().slice(0, 10)
+      if (d.startsWith(currentMonth)) hasCurrentMonthMovement = true
+      if (d > latestDatasetDate) latestDatasetDate = d
+    }
+    for (const s of dataset.inventorySessions) {
+      if (s.status !== 'confirmed') continue
+      const d = s.date.trim().slice(0, 10)
+      if (d > latestDatasetDate) latestDatasetDate = d
+    }
+    if (!hasCurrentMonthMovement && latestDatasetDate) {
+      effectiveOptions = { ...options, referenceDate: latestDatasetDate }
+    }
+  }
+
+  const range = resolveDashboardDateRange(effectiveOptions)
 
   const cacheKey = `${role}|${range.preset}|${range.from}|${range.to}|${range.referenceDate}|${buildDatasetFingerprint(dataset)}`
   if (!options?.forceRefresh && analyticsCache.has(cacheKey)) {
@@ -1015,7 +1053,6 @@ export function computeDashboardAnalytics(
   // KPI 5, KPI 6 & EXIT / LOSS ANALYTICS
   // ==========================================================================
   let rawPeriodLossesValue = 0
-  let periodLossesValue = 0
   let periodWastedQty = 0
   let periodLossEventsCount = 0
 
@@ -1023,7 +1060,6 @@ export function computeDashboardAnalytics(
   let prevLossEventsCount = 0
 
   let rawPeriodExitsValue = 0
-  let periodExitsValue = 0
   let periodConsumedQty = 0
   let periodExitsDocsCount = 0
 
@@ -1117,8 +1153,8 @@ export function computeDashboardAnalytics(
     }
   }
 
-  periodExitsValue = roundCurrency(rawPeriodExitsValue)
-  periodLossesValue = roundCurrency(rawPeriodLossesValue)
+  const periodExitsValue = roundCurrency(rawPeriodExitsValue)
+  const periodLossesValue = roundCurrency(rawPeriodLossesValue)
 
   // ==========================================================================
   // INVENTORY VARIANCES (Priority panel & Chart 8)

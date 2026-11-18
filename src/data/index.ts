@@ -9,6 +9,6 @@ const configuredAdapter = (
 export const repository: DataRepository =
   configuredAdapter === 'pocketbase'
     ? new PocketBaseDataRepository()
-    : new MemoryDataRepository()
+    : new MemoryDataRepository({ seedWithPermanentDataset: true })
 
 export * from './types'

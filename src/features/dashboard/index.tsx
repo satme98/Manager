@@ -88,6 +88,7 @@ const RANGE_PRESET_OPTIONS: Array<{
   { value: 'this_month', label: 'Ce mois' },
   { value: 'last_month', label: 'Mois dernier' },
   { value: 'this_year', label: 'Cette année' },
+  { value: 'all', label: 'Cumulé (Tout)' },
   { value: 'custom', label: 'Personnalisé' },
 ]
 
@@ -313,6 +314,7 @@ export function Dashboard() {
       'this_month',
       'last_month',
       'this_year',
+      'all',
       'custom',
     ]
     return p && validPresets.includes(p) ? p : 'this_month'

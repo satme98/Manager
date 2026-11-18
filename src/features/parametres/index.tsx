@@ -94,6 +94,7 @@ export function Parametres() {
   const queryClient = useQueryClient()
   const restoreInputRef = useRef<HTMLInputElement | null>(null)
   const [restoringBackup, setRestoringBackup] = useState(false)
+  const [resettingDemo, setResettingDemo] = useState(false)
   const role = auth.user?.role ?? 'consultation'
   const isAdmin = role === 'admin'
   const canEditSettings = canPerformCollectionAction(
@@ -329,6 +330,33 @@ export function Parametres() {
       )
     } finally {
       setRestoringBackup(false)
+    }
+  }
+
+  async function handleResetPermanentDemoData() {
+    if (!isAdmin) {
+      toast.error(
+        'Seul un administrateur peut réinitialiser les données MONARQ.'
+      )
+      return
+    }
+    setResettingDemo(true)
+    try {
+      await repository.resetToPermanentDemoData()
+      invalidateDashboardAnalyticsCache()
+      await queryClient.invalidateQueries()
+      toast.success('Base réinitialisée avec les données MONARQ complètes.', {
+        description:
+          '345 produits, 33 fournisseurs, 247 achats, 143 sorties et 119 inventaires restaurés.',
+      })
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : 'Impossible de réinitialiser les données permanentes.'
+      )
+    } finally {
+      setResettingDemo(false)
     }
   }
 
@@ -756,6 +784,20 @@ export function Parametres() {
                           <RotateCcw className='mr-1.5 h-3.5 w-3.5' />
                         )}
                         Restaurer une sauvegarde (.json)
+                      </Button>
+
+                      <Button
+                        size='sm'
+                        variant='outline'
+                        disabled={resettingDemo}
+                        onClick={() => void handleResetPermanentDemoData()}
+                      >
+                        {resettingDemo ? (
+                          <Loader2 className='mr-1.5 h-3.5 w-3.5 animate-spin' />
+                        ) : (
+                          <HardDriveDownload className='mr-1.5 h-3.5 w-3.5' />
+                        )}
+                        Réinitialiser avec les données MONARQ complètes
                       </Button>
                     </>
                   )}

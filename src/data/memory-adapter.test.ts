@@ -1,7 +1,20 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { runExcelParityCheck } from '@/lib/excel-parity-engine'
+import { clearStockCache } from '@/lib/stock-engine'
+import { useAuthStore } from '@/stores/auth-store'
+import { invalidateDashboardAnalyticsCache } from './analytics'
 import { MemoryDataRepository } from './memory-adapter'
 
 describe('MemoryDataRepository (Stage 2 Data Layer & RBAC Verification)', () => {
+  beforeEach(() => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.clear()
+    }
+    clearStockCache()
+    invalidateDashboardAnalyticsCache()
+    useAuthStore.getState().auth.reset()
+  })
+
   it('starts completely empty (0 operational records) apart from one admin user', async () => {
     const repo = new MemoryDataRepository()
     await repo.login('admin@monarq.ma', 'admin1234')
@@ -118,5 +131,42 @@ describe('MemoryDataRepository (Stage 2 Data Layer & RBAC Verification)', () => 
     // Verify audit logs were recorded for every mutation
     const logs = await repo.listAuditLogs()
     expect(logs.length).toBeGreaterThanOrEqual(5)
+  })
+
+  it('seeds permanent MONARQ dataset with 345 products, 33 suppliers, 247 purchases, 143 exits, 119 inventory lines, 5 users, and passes Excel parity check', async () => {
+    const repo = new MemoryDataRepository({ seedWithPermanentDataset: true })
+    await repo.login('admin@monarq.ma', 'admin1234')
+
+    const [products, suppliers, purchases, exits, inventories, users] =
+      await Promise.all([
+        repo.listProducts(),
+        repo.listSuppliers(),
+        repo.listPurchases(),
+        repo.listExits(),
+        repo.listInventories(),
+        repo.listUsers(),
+      ])
+
+    expect(products).toHaveLength(345)
+    expect(suppliers).toHaveLength(33)
+    expect(purchases.headers).toHaveLength(247)
+    expect(purchases.lines).toHaveLength(247)
+    expect(exits.headers).toHaveLength(143)
+    expect(exits.lines).toHaveLength(143)
+    expect(inventories.sessions).toHaveLength(2)
+    expect(inventories.lines).toHaveLength(119)
+    expect(users).toHaveLength(5)
+
+    const parity = await runExcelParityCheck(repo)
+    expect(parity.isParityOk).toBe(true)
+    expect(parity.matchedProductsCount).toBe(345)
+    expect(parity.strictDiffProductsCount).toBe(0)
+
+    // Verify smart default reference date returns October 2026 period analytics when no referenceDate is passed
+    const dash = await repo.getDashboardAnalytics({ preset: 'this_month' })
+    expect(dash.databaseEmpty).toBe(false)
+    expect(dash.kpis.periodPurchases.value).toBeCloseTo(95989.05, 2)
+    expect(dash.kpis.unpaidInvoices.totalAmount).toBeCloseTo(26938.55, 2)
+    expect(dash.kpis.stockValue.value).toBeCloseTo(79352.45, 2)
   })
 })

@@ -175,7 +175,7 @@ export function Rapports() {
   )
   const [dateFrom, setDateFrom] = useState(() => {
     const now = new Date()
-    return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`
+    return `${now.getUTCFullYear()}-01-01`
   })
   const [dateTo, setDateTo] = useState(() =>
     new Date().toISOString().slice(0, 10)

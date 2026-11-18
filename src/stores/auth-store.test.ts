@@ -19,6 +19,9 @@ const sampleUser: UserRecord = {
 
 describe('useAuthStore', () => {
   beforeEach(() => {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.clear()
+    }
     clearCookies()
     vi.resetModules()
   })

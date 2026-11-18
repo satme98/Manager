@@ -94,13 +94,12 @@ export function UserAuthForm({
   const [isLoading, setIsLoading] = useState(false)
   const navigate = useNavigate()
   const { auth } = useAuthStore()
-  const isMemoryMode = repository.adapterName === 'memory'
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      email: isMemoryMode ? 'admin@monarq.ma' : '',
-      password: isMemoryMode ? 'admin1234' : '',
+      email: '',
+      password: '',
     },
   })
 
@@ -108,7 +107,15 @@ export function UserAuthForm({
     setIsLoading(true)
     try {
       const { user, token } = await repository.login(email, password)
-      auth.setSession(user, token)
+      if (typeof auth.setSession === 'function') {
+        auth.setSession(user, token)
+      }
+      if (typeof auth.setUser === 'function') {
+        auth.setUser(user)
+      }
+      if (typeof auth.setAccessToken === 'function') {
+        auth.setAccessToken(token)
+      }
       toast.success(
         `Bienvenue, ${user.name} (${ROLE_LABELS[user.role]}) !`
       )
@@ -173,43 +180,41 @@ export function UserAuthForm({
           Se connecter
         </Button>
 
-        {isMemoryMode && (
-          <div className='mt-2 rounded-md border border-[#E1E3E5] bg-[#F6F6F7] p-3 text-xs'>
-            <div className='mb-2 flex items-center justify-between gap-2'>
-              <div>
-                <p className='font-semibold text-[#202223]'>
-                  Connexion directe en 1 clic (Aperçu)
-                </p>
-                <p className='text-[#6D7175]'>
-                  Identifiants par défaut :{' '}
-                  <span className='font-mono font-medium text-[#202223]'>
-                    admin@monarq.ma
-                  </span>{' '}
-                  /{' '}
-                  <span className='font-mono font-medium text-[#202223]'>
-                    admin1234
-                  </span>
-                </p>
-              </div>
-            </div>
-            <div className='flex flex-wrap gap-1.5'>
-              {QUICK_ACCOUNTS.map((acc) => (
-                <Button
-                  key={acc.email}
-                  type='button'
-                  variant='outline'
-                  size='sm'
-                  disabled={isLoading}
-                  className='h-7 bg-white px-2.5 text-xs font-medium hover:bg-[#303030] hover:text-white'
-                  onClick={() => handleQuickLogin(acc.email, acc.password)}
-                >
-                  <KeyRound className='mr-1 h-3 w-3' />
-                  {acc.label}
-                </Button>
-              ))}
+        <div className='mt-2 rounded-md border border-[#E1E3E5] bg-[#F6F6F7] p-3 text-xs'>
+          <div className='mb-2 flex items-center justify-between gap-2'>
+            <div>
+              <p className='font-semibold text-[#202223]'>
+                Connexion directe en 1 clic
+              </p>
+              <p className='text-[#6D7175]'>
+                Identifiants par défaut :{' '}
+                <span className='font-mono font-medium text-[#202223]'>
+                  admin@monarq.ma
+                </span>{' '}
+                /{' '}
+                <span className='font-mono font-medium text-[#202223]'>
+                  admin1234
+                </span>
+              </p>
             </div>
           </div>
-        )}
+          <div className='flex flex-wrap gap-1.5'>
+            {QUICK_ACCOUNTS.map((acc) => (
+              <Button
+                key={acc.email}
+                type='button'
+                variant='outline'
+                size='sm'
+                disabled={isLoading}
+                className='h-7 bg-white px-2.5 text-xs font-medium hover:bg-[#303030] hover:text-white'
+                onClick={() => handleQuickLogin(acc.email, acc.password)}
+              >
+                <KeyRound className='mr-1 h-3 w-3' />
+                {acc.label}
+              </Button>
+            ))}
+          </div>
+        </div>
       </form>
     </Form>
   )

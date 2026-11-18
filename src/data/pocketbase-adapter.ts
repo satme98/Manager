@@ -34,6 +34,7 @@ import {
   type DashboardAnalyticsQueryOptions,
   type DashboardAnalyticsResult,
 } from './analytics'
+import { buildPermanentMonarqBackupPayload } from './monarq-permanent-seed'
 import {
   computeTargetedProductsStock,
   rebuildAndCompareStockCache,
@@ -290,6 +291,7 @@ export class PocketBaseDataRepository implements DataRepository {
     header: PurchaseRecord
     lines: PurchaseLineRecord[]
   }> {
+    const actor = await this.getCurrentUser()
     const header = await this.pb.collection('purchases').create<PurchaseRecord>(
       {
         date: input.date,
@@ -297,7 +299,15 @@ export class PocketBaseDataRepository implements DataRepository {
         invoice_no: input.invoice_no,
         payment_status: input.payment_status,
         payment_date: input.payment_date ?? null,
+        raw_payment_status: input.raw_payment_status ?? null,
+        is_ambiguous_payment: Boolean(input.is_ambiguous_payment),
+        recorded_by: actor?.id ?? '',
+        recorded_by_name:
+          input.recorded_by_name?.trim() || actor?.name || actor?.email || '',
         notes: input.notes ?? '',
+        correction_status: 'none',
+        import_batch_id: input.import_batch_id ?? null,
+        order_index: input.order_index ?? null,
       }
     )
 
@@ -310,6 +320,11 @@ export class PocketBaseDataRepository implements DataRepository {
           product: line.product,
           qty: line.qty,
           unit_price: line.unit_price,
+          is_duplicate_candidate: Boolean(line.is_duplicate_candidate),
+          duplicate_verified: Boolean(line.duplicate_verified),
+          source_row_id: line.source_row_id ?? null,
+          import_batch_id: input.import_batch_id ?? null,
+          order_index: line.order_index ?? null,
         })
       lines.push(createdLine)
     }
@@ -520,14 +535,18 @@ export class PocketBaseDataRepository implements DataRepository {
       })
 
     const mode = options?.mode ?? 'cancel'
+    const actor = await this.getCurrentUser()
     const header = await this.pb.collection('purchases').create<PurchaseRecord>(
       {
         date: original.date,
         supplier: original.supplier,
         invoice_no: `REV-${original.invoice_no}`,
         payment_status: original.payment_status,
+        recorded_by: actor?.id ?? '',
+        recorded_by_name: actor?.name || actor?.email || '',
         reversed_of: original.id,
         reversal_reason: reason,
+        correction_status: 'none',
         notes: `Contre-passation (${mode === 'correct' ? 'Correction' : 'Annulation'}): ${reason}`,
       }
     )
@@ -544,6 +563,10 @@ export class PocketBaseDataRepository implements DataRepository {
         })
       lines.push(revLine)
     }
+
+    await this.pb.collection('purchases').update<PurchaseRecord>(original.id, {
+      correction_status: mode === 'correct' ? 'corrected' : 'reversed',
+    })
 
     return { status: 'reversed', header, lines }
   }
@@ -597,11 +620,15 @@ export class PocketBaseDataRepository implements DataRepository {
       })
 
     const mode = options?.mode ?? 'cancel'
+    const actor = await this.getCurrentUser()
     const header = await this.pb.collection('exits').create<ExitRecord>({
       date: original.date,
       destination: original.destination,
+      recorded_by: actor?.id ?? '',
+      recorded_by_name: actor?.name || actor?.email || '',
       reversed_of: original.id,
       reversal_reason: reason,
+      correction_status: 'none',
       notes: `Contre-passation (${mode === 'correct' ? 'Correction' : 'Annulation'}): ${reason}`,
     })
 
@@ -619,6 +646,10 @@ export class PocketBaseDataRepository implements DataRepository {
         })
       lines.push(revLine)
     }
+
+    await this.pb.collection('exits').update<ExitRecord>(original.id, {
+      correction_status: mode === 'correct' ? 'corrected' : 'reversed',
+    })
 
     return { status: 'reversed', header, lines }
   }
@@ -1133,5 +1164,10 @@ export class PocketBaseDataRepository implements DataRepository {
     }
 
     invalidateDashboardAnalyticsCache()
+  }
+
+  async resetToPermanentDemoData(): Promise<void> {
+    const payload = buildPermanentMonarqBackupPayload('pocketbase')
+    await this.restoreBackup(payload)
   }
 }

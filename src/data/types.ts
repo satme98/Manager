@@ -640,5 +640,6 @@ export interface DataRepository {
   // Backup export & restore
   exportBackup(): Promise<BackupPayload>
   restoreBackup(payload: BackupPayload): Promise<void>
+  resetToPermanentDemoData(): Promise<void>
 }
 

@@ -73,6 +73,8 @@ migrate(
         { name: 'location', type: 'text', required: false },
         { name: 'notes', type: 'text', required: false },
         { name: 'archived', type: 'bool', required: false },
+        { name: 'source_row_id', type: 'text', required: false },
+        { name: 'import_batch_id', type: 'text', required: false },
       ],
       indexes: [
         'CREATE UNIQUE INDEX idx_products_ref_ci ON products (LOWER(TRIM(ref)))',
@@ -110,6 +112,9 @@ migrate(
         { name: 'payment_terms', type: 'text', required: false },
         { name: 'notes', type: 'text', required: false },
         { name: 'archived', type: 'bool', required: false },
+        { name: 'missing_from_supplier_sheet', type: 'bool', required: false },
+        { name: 'source_row_id', type: 'text', required: false },
+        { name: 'import_batch_id', type: 'text', required: false },
       ],
       indexes: [
         'CREATE UNIQUE INDEX idx_suppliers_name_ci ON suppliers (LOWER(TRIM(name)))',
@@ -157,6 +162,8 @@ migrate(
         { name: 'payment_date', type: 'text', required: false },
         { name: 'payment_method', type: 'text', required: false },
         { name: 'payment_reference', type: 'text', required: false },
+        { name: 'raw_payment_status', type: 'text', required: false },
+        { name: 'is_ambiguous_payment', type: 'bool', required: false },
         { name: 'amount_paid', type: 'number', required: false, min: 0 },
         { name: 'payment_events', type: 'json', required: false },
         {
@@ -166,6 +173,7 @@ migrate(
           collectionId: users.id,
           maxSelect: 1,
         },
+        { name: 'recorded_by_name', type: 'text', required: false },
         { name: 'notes', type: 'text', required: false },
         { name: 'reversal_reason', type: 'text', required: false },
         {
@@ -177,7 +185,12 @@ migrate(
         },
         { name: 'pending_reversal_reason', type: 'text', required: false },
         { name: 'pending_reversal_requested_by', type: 'text', required: false },
+        { name: 'pending_reversal_requested_by_name', type: 'text', required: false },
+        { name: 'pending_reversal_requested_at', type: 'text', required: false },
+        { name: 'pending_reversal_mode', type: 'text', required: false },
         { name: 'pending_reversal_at', type: 'text', required: false },
+        { name: 'import_batch_id', type: 'text', required: false },
+        { name: 'order_index', type: 'number', required: false },
       ],
     })
     app.save(purchases)
@@ -232,7 +245,11 @@ migrate(
         { name: 'qty', type: 'number', required: true },
         { name: 'unit_price', type: 'number', required: false, min: 0 },
         { name: 'amount', type: 'number', required: false },
+        { name: 'is_duplicate_candidate', type: 'bool', required: false },
+        { name: 'duplicate_verified', type: 'bool', required: false },
         { name: 'source_row_id', type: 'text', required: false },
+        { name: 'import_batch_id', type: 'text', required: false },
+        { name: 'order_index', type: 'number', required: false },
       ],
     })
     app.save(purchaseLines)
@@ -265,6 +282,7 @@ migrate(
           collectionId: users.id,
           maxSelect: 1,
         },
+        { name: 'recorded_by_name', type: 'text', required: false },
         { name: 'notes', type: 'text', required: false },
         { name: 'reversal_reason', type: 'text', required: false },
         { name: 'negative_stock_reason', type: 'text', required: false },
@@ -277,7 +295,12 @@ migrate(
         },
         { name: 'pending_reversal_reason', type: 'text', required: false },
         { name: 'pending_reversal_requested_by', type: 'text', required: false },
+        { name: 'pending_reversal_requested_by_name', type: 'text', required: false },
+        { name: 'pending_reversal_requested_at', type: 'text', required: false },
+        { name: 'pending_reversal_mode', type: 'text', required: false },
         { name: 'pending_reversal_at', type: 'text', required: false },
+        { name: 'import_batch_id', type: 'text', required: false },
+        { name: 'order_index', type: 'number', required: false },
       ],
     })
     app.save(exits)
@@ -325,11 +348,15 @@ migrate(
           collectionId: products.id,
           maxSelect: 1,
         },
-        { name: 'qty_consumed', type: 'number', required: false, min: 0 },
-        { name: 'qty_wasted', type: 'number', required: false, min: 0 },
+        { name: 'qty_consumed', type: 'number', required: false },
+        { name: 'qty_wasted', type: 'number', required: false },
         { name: 'loss_reason', type: 'text', required: false },
         { name: 'unit_cost_snapshot', type: 'number', required: false, min: 0 },
+        { name: 'is_duplicate_candidate', type: 'bool', required: false },
+        { name: 'duplicate_verified', type: 'bool', required: false },
         { name: 'source_row_id', type: 'text', required: false },
+        { name: 'import_batch_id', type: 'text', required: false },
+        { name: 'order_index', type: 'number', required: false },
       ],
     })
     app.save(exitLines)
@@ -381,13 +408,9 @@ migrate(
           collectionId: users.id,
           maxSelect: 1,
         },
-        {
-          name: 'confirmed_by',
-          type: 'relation',
-          required: false,
-          collectionId: users.id,
-          maxSelect: 1,
-        },
+        { name: 'created_by_name', type: 'text', required: false },
+        { name: 'confirmed_by', type: 'text', required: false },
+        { name: 'confirmed_by_name', type: 'text', required: false },
         { name: 'confirmed_at', type: 'text', required: false },
         {
           name: 'reversed_by',
@@ -396,9 +419,11 @@ migrate(
           collectionId: users.id,
           maxSelect: 1,
         },
+        { name: 'reversed_by_name', type: 'text', required: false },
         { name: 'reversed_at', type: 'text', required: false },
         { name: 'reversal_reason', type: 'text', required: false },
         { name: 'notes', type: 'text', required: false },
+        { name: 'import_batch_id', type: 'text', required: false },
       ],
     })
     app.save(inventorySessions)
@@ -448,6 +473,9 @@ migrate(
         { name: 'diff', type: 'number', required: false },
         { name: 'value_diff', type: 'number', required: false },
         { name: 'comment', type: 'text', required: false },
+        { name: 'source_row_id', type: 'text', required: false },
+        { name: 'import_batch_id', type: 'text', required: false },
+        { name: 'order_index', type: 'number', required: false },
       ],
     })
     app.save(inventoryLines)
